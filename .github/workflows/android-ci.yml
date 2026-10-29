@@ -60,7 +60,10 @@ jobs:
             KEY_SOURCE="GitHub Secret (DEBUG_KEYSTORE_BASE64)"
           elif [ -f "debug.keystore.base64" ]; then
             tr -d '[:space:]' < debug.keystore.base64 | base64 -d > debug.keystore
-            KEY_SOURCE="Workspace debug.keystore.base64"
+            KEY_SOURCE="Workspace debug.keystore.base64 (Firebase Registered)"
+          elif [ -f ".github/debug-signing.b64" ]; then
+            tr -d '[:space:]' < .github/debug-signing.b64 | base64 -d > debug.keystore
+            KEY_SOURCE="CI Registered Debug Keystore (.github/debug-signing.b64)"
           elif [ ! -f "debug.keystore" ]; then
             keytool -genkeypair -v \
               -keystore debug.keystore \

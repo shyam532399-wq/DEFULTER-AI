@@ -89,14 +89,17 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 
 private const val AUTH_TAG = "Auth"
-private const val REGISTERED_SHA1 = "AD:8C:A3:5C:24:4E:79:2C:E3:3F:5B:0A:9E:84:5B:D8:6D:D0:2A:40"
+private val REGISTERED_SHA1_SET = setOf(
+    "AD:8C:A3:5C:24:4E:79:2C:E3:3F:5B:0A:9E:84:5B:D8:6D:D0:2A:40",
+    "26:53:FB:42:4C:53:9D:B2:54:30:8F:5D:75:04:92:71:0A:80:89:17"
+)
 
 data class ApkSignatureHashes(
     val sha1: String,
     val sha256: String
 ) {
     val matchesRegisteredFirebaseKey: Boolean
-        get() = sha1.equals(REGISTERED_SHA1, ignoreCase = true)
+        get() = REGISTERED_SHA1_SET.any { it.equals(sha1, ignoreCase = true) }
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
