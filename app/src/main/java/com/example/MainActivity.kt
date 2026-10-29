@@ -30,6 +30,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -101,13 +102,28 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MayaRootApp(auth: FirebaseAuth = Firebase.auth) {
-    val currentUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
+    var currentUser by remember { mutableStateOf(auth.currentUser) }
+
+    DisposableEffect(auth) {
+        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            currentUser = firebaseAuth.currentUser
+        }
+        auth.addAuthStateListener(listener)
+        onDispose {
+            auth.removeAuthStateListener(listener)
+        }
+    }
+
     val user = currentUser
 
     if (user == null) {
         MayaTheme(persona = MayaPersona.MAYA, darkTheme = true) {
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                AuthScreen(onAuthSuccess = { /* authStateFlow updates automatically */ })
+                AuthScreen(
+                    onAuthSuccess = {
+                        currentUser = auth.currentUser
+                    }
+                )
             }
         }
     } else {

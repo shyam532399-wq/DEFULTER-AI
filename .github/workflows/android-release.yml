@@ -61,8 +61,10 @@ jobs:
         run: |
           if [ -n "$DEBUG_KEYSTORE_SECRET" ]; then
             echo "$DEBUG_KEYSTORE_SECRET" | tr -d '[:space:]' | base64 -d > debug.keystore
+            KEY_SOURCE="GitHub Secret (DEBUG_KEYSTORE_BASE64)"
           elif [ -f "debug.keystore.base64" ]; then
             tr -d '[:space:]' < debug.keystore.base64 | base64 -d > debug.keystore
+            KEY_SOURCE="Workspace debug.keystore.base64"
           elif [ ! -f "debug.keystore" ]; then
             keytool -genkeypair -v \
               -keystore debug.keystore \
@@ -73,7 +75,18 @@ jobs:
               -keysize 2048 \
               -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
+            KEY_SOURCE="Temporary CI Keystore (NOT registered in Firebase — add SHA-1 below in Firebase Console or set DEBUG_KEYSTORE_BASE64 secret for Google Sign-In)"
+          else
+            KEY_SOURCE="Existing debug.keystore"
           fi
+
+          {
+            echo "### APK Signing & Google Sign-In Info"
+            echo "- **Debug Keystore Source:** $KEY_SOURCE"
+            echo '```'
+            keytool -list -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android | grep -E "SHA1:|SHA256:" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [ -n "$GOOGLE_SERVICES_SECRET" ]; then
             echo "$GOOGLE_SERVICES_SECRET" > app/google-services.json
