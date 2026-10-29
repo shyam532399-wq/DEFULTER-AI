@@ -35,18 +35,22 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK Licenses
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+      - name: Configure Pre-installed Android SDK & Accept Licenses
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          sudo chown -R "$USER:$USER" "$SDK_ROOT" || true
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)
+          echo "Found sdkmanager at: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      - name: Prepare Debug Keystore & Optional Firebase Config
+      - name: Prepare Debug Keystore & Firebase Config
         env:
           DEBUG_KEYSTORE_SECRET: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
           GOOGLE_SERVICES_SECRET: ${{ secrets.GOOGLE_SERVICES_JSON }}
@@ -69,6 +73,48 @@ jobs:
 
           if [ -n "$GOOGLE_SERVICES_SECRET" ]; then
             echo "$GOOGLE_SERVICES_SECRET" > app/google-services.json
+          elif [ ! -f "app/google-services.json" ]; then
+            cat << 'EOF' > app/google-services.json
+          {
+            "project_info": {
+              "project_number": "123456789000",
+              "project_id": "demo-no-project",
+              "storage_bucket": "demo-no-project.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789000:android:abcdef1234567890",
+                  "android_client_info": {
+                    "package_name": "com.aistudio.mayaagent.vxrkqm"
+                  }
+                },
+                "oauth_client": [
+                  {
+                    "client_id": "123456789000-ciwebclient.apps.googleusercontent.com",
+                    "client_type": 3
+                  }
+                ],
+                "api_key": [
+                  {
+                    "current_key": "AIzaSyDummyCiKeyForVerification00000000"
+                  }
+                ]
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+          fi
+
+          if [ ! -f "app/src/main/res/values/firebase_applet_config.xml" ]; then
+            cat << 'EOF' > app/src/main/res/values/firebase_applet_config.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="firestore_database_id" translatable="false">ai-studio-android-maya-442da1eb-4eff-4650-a527-f7175f988a86</string>
+              <string name="recaptcha_site_key" translatable="false">ci-dummy-recaptcha-key</string>
+          </resources>
+          EOF
           fi
 
           if [ ! -f ".env" ] && [ -f ".env.example" ]; then
@@ -77,8 +123,8 @@ jobs:
 
       - name: Run Firestore Security Rules & Robolectric Unit/CUJ Tests
         run: |
-          npm install --no-save firebase-tools @firebase/rules-unit-testing
-          npx firebase emulators:exec \
+          npm install --no-save firebase-tools@15 @firebase/rules-unit-testing@5
+          ./node_modules/.bin/firebase emulators:exec \
             --only auth,firestore \
             --project demo-no-project \
             "FIRESTORE_EMULATOR_HOST=127.0.0.1:8085 node --test firestore.test.js && gradle :app:testDebugUnitTest --no-daemon"
