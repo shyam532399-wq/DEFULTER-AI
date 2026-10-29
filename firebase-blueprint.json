@@ -1,0 +1,279 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Boss profile settings, active Maya persona, listen mode, personal Hinglish wiki, and Voice Guardian state.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the owner."
+        },
+        "bossName": {
+          "type": "string",
+          "description": "Display name Maya uses to address the user (default Boss)."
+        },
+        "persona": {
+          "type": "string",
+          "enum": ["maya", "friday", "venom"],
+          "description": "Active assistant persona."
+        },
+        "tone": {
+          "type": "string",
+          "enum": ["calm", "excited", "soft"],
+          "description": "Current conversational mood/tone."
+        },
+        "listenMode": {
+          "type": "string",
+          "enum": ["boss_only", "everyone"],
+          "description": "Voice listen filter: sirf meri suno (boss_only) or sabki suno (everyone)."
+        },
+        "personalWiki": {
+          "type": "string",
+          "description": "Boss's personal wiki written in Hinglish."
+        },
+        "voiceEnrolled": {
+          "type": "boolean",
+          "description": "Whether Boss has enrolled a Voice Guardian passphrase profile."
+        },
+        "voicePassphrase": {
+          "type": "string",
+          "description": "Enrolled Hinglish verification phrase for Voice Guardian."
+        },
+        "voiceModel": {
+          "type": "string",
+          "enum": ["powerful", "medium"],
+          "description": "Selected Voice Guardian recognition model."
+        },
+        "guardArmed": {
+          "type": "boolean",
+          "description": "Whether Away Voice Guardian mode is armed."
+        },
+        "touchGuardArmed": {
+          "type": "boolean",
+          "description": "Whether screen Touch Guard protection is armed."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp set via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp set via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "bossName",
+        "persona",
+        "tone",
+        "listenMode",
+        "personalWiki",
+        "voiceEnrolled",
+        "voicePassphrase",
+        "voiceModel",
+        "guardArmed",
+        "touchGuardArmed",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BoardDocument": {
+      "title": "BoardDocument",
+      "description": "Long-form reports, research, marketing plans, review themes, emails, and notes stored on Maya Board.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "title": {
+          "type": "string",
+          "description": "Document title."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["research", "marketing", "reviews", "email", "market", "note", "dashboard"],
+          "description": "Board document category."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Short 1-3 line Hinglish spoken summary."
+        },
+        "content": {
+          "type": "string",
+          "description": "Full structured content on Maya Board."
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "Whether pinned to top of Maya Board."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "title",
+        "category",
+        "summary",
+        "content",
+        "pinned",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MemoryItem": {
+      "title": "MemoryItem",
+      "description": "Remembered facts, app nicknames, and conversation episodes for Maya.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["fact", "app_nickname", "episode"],
+          "description": "Memory classification."
+        },
+        "key": {
+          "type": "string",
+          "description": "Memory topic, app nickname, or episode title."
+        },
+        "value": {
+          "type": "string",
+          "description": "Memory content in Hinglish."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": ["userId", "kind", "key", "value", "createdAt", "updatedAt"]
+    },
+    "SkillPlaybook": {
+      "title": "SkillPlaybook",
+      "description": "Custom Hinglish playbooks, macros, and event triggers for Maya.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["skill", "macro", "rule"],
+          "description": "Playbook type."
+        },
+        "name": {
+          "type": "string",
+          "description": "Skill, macro, or rule name."
+        },
+        "trigger": {
+          "type": "string",
+          "description": "Phrase or device event that activates this playbook."
+        },
+        "stepsText": {
+          "type": "string",
+          "description": "Step-by-step Hinglish tool instructions."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this skill/macro/rule is active."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": ["userId", "kind", "name", "trigger", "stepsText", "enabled", "createdAt", "updatedAt"]
+    },
+    "ReminderItem": {
+      "title": "ReminderItem",
+      "description": "Reminders, tasks, and market watchlist alerts managed by Maya.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["reminder", "task", "watchlist"],
+          "description": "Item kind."
+        },
+        "title": {
+          "type": "string",
+          "description": "Title or ticker symbol."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Additional context or target condition."
+        },
+        "scheduledInfo": {
+          "type": "string",
+          "description": "Human-readable time or alert threshold."
+        },
+        "completed": {
+          "type": "boolean",
+          "description": "Completion state."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": ["userId", "kind", "title", "detail", "scheduledInfo", "completed", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Per-user Boss profile, persona settings, Hinglish wiki, and Voice Guardian configuration."
+    },
+    "/users/{userId}/documents/{docId}": {
+      "schema": "BoardDocument",
+      "description": "Per-user Maya Board documents (research, plans, review themes, emails, notes)."
+    },
+    "/users/{userId}/memories/{memoryId}": {
+      "schema": "MemoryItem",
+      "description": "Per-user remembered facts, app nicknames, and conversation episodes."
+    },
+    "/users/{userId}/skills/{skillId}": {
+      "schema": "SkillPlaybook",
+      "description": "Per-user custom Hinglish skills, macros, and event trigger rules."
+    },
+    "/users/{userId}/reminders/{reminderId}": {
+      "schema": "ReminderItem",
+      "description": "Per-user reminders, tasks, and market watchlist items."
+    }
+  }
+}

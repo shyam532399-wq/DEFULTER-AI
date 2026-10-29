@@ -1,0 +1,6 @@
+{
+  "name": "Maya",
+  "description": "Boss ki personal Hinglish voice aur phone assistant — phone control, autopilot missions, board docs, memory wiki, aur Voice Guardian ke saath.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

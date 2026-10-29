@@ -1,0 +1,23 @@
+<resources>
+    <string name="app_name">Maya</string>
+    <string name="auth_headline">Namaste Boss, main Maya hoon.</string>
+    <string name="auth_subtitle">Aapki Hinglish personal phone agent — sirf baatein nahi, phone ke andar rehkar kaam karti hai.</string>
+    <string name="sign_in_with_google">Sign in with Google</string>
+    <string name="nav_agent">Maya</string>
+    <string name="nav_board">Board</string>
+    <string name="nav_skills">Skills</string>
+    <string name="nav_memory">Guardian</string>
+    <string name="input_placeholder_maya">Boliye Boss… (jaise: Torch on karo, kal 7 baje jagana)</string>
+    <string name="listen_mode_boss_only">Sirf meri suno</string>
+    <string name="listen_mode_everyone">Sabki suno</string>
+    <string name="confirm_action_yes">Haan, kar do</string>
+    <string name="confirm_action_no">Rehne do</string>
+    <string name="cd_maya_avatar">Maya persona aura emblem</string>
+    <string name="cd_hero_banner">Maya acoustic sphere hero banner</string>
+    <string name="cd_mic_button">Bolkar command dein</string>
+    <string name="cd_send_button">Command bhejein</string>
+    <string name="cd_attach_image">Photo ya screenshot dikhayein</string>
+    <string name="cd_camera_capture">Camera se live dekhein</string>
+    <string name="cd_speak_toggle">Voice reply chalu ya band karein</string>
+    <string name="cd_wake_word_toggle">Hands-free Hey Maya wake word toggle</string>
+</resources>

@@ -1,0 +1,238 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidTimestamps(data) {
+      return data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    // 1. UserProfile Validation Blueprint
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+               'userId', 'bossName', 'persona', 'tone', 'listenMode',
+               'personalWiki', 'voiceEnrolled', 'voicePassphrase',
+               'voiceModel', 'guardArmed', 'touchGuardArmed', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'userId', 'bossName', 'persona', 'tone', 'listenMode',
+               'personalWiki', 'voiceEnrolled', 'voicePassphrase',
+               'voiceModel', 'guardArmed', 'touchGuardArmed', 'createdAt', 'updatedAt'
+             ]) &&
+             data.userId is string && data.userId.size() <= 128 && data.userId == userId && data.userId == request.auth.uid &&
+             data.bossName is string && data.bossName.size() >= 1 && data.bossName.size() <= 60 &&
+             data.persona is string && data.persona.size() <= 20 && (data.persona in ['maya', 'friday', 'venom']) &&
+             data.tone is string && data.tone.size() <= 20 && (data.tone in ['calm', 'excited', 'soft']) &&
+             data.listenMode is string && data.listenMode.size() <= 20 && (data.listenMode in ['boss_only', 'everyone']) &&
+             data.personalWiki is string && data.personalWiki.size() <= 4000 &&
+             data.voiceEnrolled is bool &&
+             data.voicePassphrase is string && data.voicePassphrase.size() <= 200 &&
+             data.voiceModel is string && data.voiceModel.size() <= 20 && (data.voiceModel in ['powerful', 'medium']) &&
+             data.guardArmed is bool &&
+             data.touchGuardArmed is bool &&
+             isValidTimestamps(data);
+    }
+
+    // 2. BoardDocument Validation Blueprint
+    function isValidBoardDocument(data, userId) {
+      return data.keys().hasAll([
+               'userId', 'title', 'category', 'summary', 'content', 'pinned', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'userId', 'title', 'category', 'summary', 'content', 'pinned', 'createdAt', 'updatedAt'
+             ]) &&
+             data.userId is string && data.userId.size() <= 128 && data.userId == userId && data.userId == request.auth.uid &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.category is string && data.category.size() <= 30 &&
+             (data.category in ['research', 'marketing', 'reviews', 'email', 'market', 'note', 'dashboard']) &&
+             data.summary is string && data.summary.size() <= 600 &&
+             data.content is string && data.content.size() >= 1 && data.content.size() <= 30000 &&
+             data.pinned is bool &&
+             isValidTimestamps(data);
+    }
+
+    // 3. MemoryItem Validation Blueprint
+    function isValidMemoryItem(data, userId) {
+      return data.keys().hasAll(['userId', 'kind', 'key', 'value', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['userId', 'kind', 'key', 'value', 'createdAt', 'updatedAt']) &&
+             data.userId is string && data.userId.size() <= 128 && data.userId == userId && data.userId == request.auth.uid &&
+             data.kind is string && data.kind.size() <= 30 && (data.kind in ['fact', 'app_nickname', 'episode']) &&
+             data.key is string && data.key.size() >= 1 && data.key.size() <= 120 &&
+             data.value is string && data.value.size() >= 1 && data.value.size() <= 2000 &&
+             isValidTimestamps(data);
+    }
+
+    // 4. SkillPlaybook Validation Blueprint
+    function isValidSkillPlaybook(data, userId) {
+      return data.keys().hasAll(['userId', 'kind', 'name', 'trigger', 'stepsText', 'enabled', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['userId', 'kind', 'name', 'trigger', 'stepsText', 'enabled', 'createdAt', 'updatedAt']) &&
+             data.userId is string && data.userId.size() <= 128 && data.userId == userId && data.userId == request.auth.uid &&
+             data.kind is string && data.kind.size() <= 20 && (data.kind in ['skill', 'macro', 'rule']) &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.trigger is string && data.trigger.size() >= 1 && data.trigger.size() <= 200 &&
+             data.stepsText is string && data.stepsText.size() >= 1 && data.stepsText.size() <= 4000 &&
+             data.enabled is bool &&
+             isValidTimestamps(data);
+    }
+
+    // 5. ReminderItem Validation Blueprint
+    function isValidReminderItem(data, userId) {
+      return data.keys().hasAll(['userId', 'kind', 'title', 'detail', 'scheduledInfo', 'completed', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['userId', 'kind', 'title', 'detail', 'scheduledInfo', 'completed', 'createdAt', 'updatedAt']) &&
+             data.userId is string && data.userId.size() <= 128 && data.userId == userId && data.userId == request.auth.uid &&
+             data.kind is string && data.kind.size() <= 20 && (data.kind in ['reminder', 'task', 'watchlist']) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.detail is string && data.detail.size() <= 500 &&
+             data.scheduledInfo is string && data.scheduledInfo.size() <= 120 &&
+             data.completed is bool &&
+             isValidTimestamps(data);
+    }
+
+    // /users/{userId}
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming(), userId);
+
+      allow update: if isSignedIn() &&
+                       isValidUserProfile(incoming(), userId) &&
+                       isOwner(userId) &&
+                       isValidId(userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'bossName', 'persona', 'tone', 'listenMode', 'personalWiki',
+                         'voiceEnrolled', 'voicePassphrase', 'voiceModel',
+                         'guardArmed', 'touchGuardArmed', 'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // /users/{userId}/documents/{docId}
+      match /documents/{docId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(docId) && existing().userId == request.auth.uid;
+        allow list: if isOwner(userId) && isValidId(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(docId) &&
+                         isValidBoardDocument(incoming(), userId);
+
+        allow update: if isSignedIn() &&
+                         isValidBoardDocument(incoming(), userId) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(docId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'title', 'category', 'summary', 'content', 'pinned', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(docId) && existing().userId == request.auth.uid;
+      }
+
+      // /users/{userId}/memories/{memoryId}
+      match /memories/{memoryId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(memoryId) && existing().userId == request.auth.uid;
+        allow list: if isOwner(userId) && isValidId(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(memoryId) &&
+                         isValidMemoryItem(incoming(), userId);
+
+        allow update: if isSignedIn() &&
+                         isValidMemoryItem(incoming(), userId) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(memoryId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'kind', 'key', 'value', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(memoryId) && existing().userId == request.auth.uid;
+      }
+
+      // /users/{userId}/skills/{skillId}
+      match /skills/{skillId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(skillId) && existing().userId == request.auth.uid;
+        allow list: if isOwner(userId) && isValidId(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(skillId) &&
+                         isValidSkillPlaybook(incoming(), userId);
+
+        allow update: if isSignedIn() &&
+                         isValidSkillPlaybook(incoming(), userId) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(skillId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'kind', 'name', 'trigger', 'stepsText', 'enabled', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(skillId) && existing().userId == request.auth.uid;
+      }
+
+      // /users/{userId}/reminders/{reminderId}
+      match /reminders/{reminderId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(reminderId) && existing().userId == request.auth.uid;
+        allow list: if isOwner(userId) && isValidId(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(reminderId) &&
+                         isValidReminderItem(incoming(), userId);
+
+        allow update: if isSignedIn() &&
+                         isValidReminderItem(incoming(), userId) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(reminderId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'kind', 'title', 'detail', 'scheduledInfo', 'completed', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(reminderId) && existing().userId == request.auth.uid;
+      }
+    }
+  }
+}
