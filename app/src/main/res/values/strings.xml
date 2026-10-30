@@ -21,4 +21,10 @@
     <string name="cd_speak_toggle">Voice reply chalu ya band karein</string>
     <string name="cd_wake_word_toggle">Hands-free Hey Maya wake word toggle</string>
     <string name="accessibility_service_description">Maya Phone Autopilot — Boss ke kehne par screen text padhne, buttons tap karne, scroll karne, aur Home/Back navigation chalane ke liye.</string>
+    <string name="cd_hud_orb">Maya reactive AI orb — tap to speak or stop</string>
+    <string name="cd_toggle_hud_deck">Quantum HUD panel dikhayein ya chhupayein</string>
+    <string name="cd_toggle_floating_hud">Draggable Floating Mini-HUD chalu ya band karein</string>
+    <string name="cd_close_floating_hud">Floating Mini-HUD band karein</string>
+    <string name="hud_title_quantum">MAYA QUANTUM HUD</string>
+    <string name="github_store_title">GitHub Skill Store &amp; Repo Sync</string>
 </resources>

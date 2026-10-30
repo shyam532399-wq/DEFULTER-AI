@@ -41,7 +41,7 @@ data class ActionOutcome(
 
 class PhoneActionExecutor(private val context: Context) {
 
-    private val appContext = context.applicationContext
+    internal val appContext = context.applicationContext
     @Volatile
     var isTorchOn: Boolean = false
         private set

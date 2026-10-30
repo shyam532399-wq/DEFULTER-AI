@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,26 +18,33 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.FlashlightOff
 import androidx.compose.material.icons.filled.FlashlightOn
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -47,19 +55,27 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.R
 import com.example.data.model.DataUiState
 import com.example.data.model.SkillPlaybook
 import com.example.domain.DeviceTelemetry
+import com.example.domain.GitHubRemoteSkill
+import com.example.domain.SystemHudMonitor
+import com.example.domain.SystemHudSnapshot
+import com.example.ui.GitHubSkillStoreState
 import com.example.ui.MayaViewModel
 import com.example.ui.PendingConfirmation
 import com.example.ui.theme.LocalPersonaAccent
+import java.util.Locale
 
 @Composable
 fun SkillsDeckScreen(
@@ -68,7 +84,9 @@ fun SkillsDeckScreen(
     skillsState: DataUiState<List<SkillPlaybook>>,
     pendingConfirmation: PendingConfirmation?,
     onBackToCockpit: () -> Unit,
-    onRunMacroInCockpit: (String) -> Unit
+    onRunMacroInCockpit: (String) -> Unit,
+    hudSnapshot: SystemHudSnapshot = SystemHudSnapshot(),
+    gitHubSkillStoreState: GitHubSkillStoreState = GitHubSkillStoreState.Idle
 ) {
     BackHandler { onBackToCockpit() }
 
@@ -78,10 +96,13 @@ fun SkillsDeckScreen(
 
     val autopilotActive by viewModel.autopilotConnected.collectAsStateWithLifecycle()
     var showCreateSkillDialog by remember { mutableStateOf(false) }
+    var repoUrlInput by rememberSaveable { mutableStateOf("https://github.com/HunterisLive-1/maya-ui.git") }
     val accent = LocalPersonaAccent.current
 
     val builtInMacros = remember {
         listOf(
+            Triple("maya system hud", "Maya AI HUD System Diagnostic", "System HUD status aur network speed Board pe rakho"),
+            Triple("floating hud", "Floating Mini-HUD Overlay", "Floating HUD on karo"),
             Triple("gemini image", "Gemini Image Macro", "Gemini se image banao: Sunset on a beach in Goa, cinematic"),
             Triple("chatgpt image", "ChatGPT Image Flow", "ChatGPT kholkar image prompt bhejne ka mission plan banao"),
             Triple("gemini video", "Gemini Video Flow", "Gemini app me video generation ka step-by-step mission plan banao"),
@@ -109,17 +130,18 @@ fun SkillsDeckScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Phone Deck, Skills & Macros",
                             style = MaterialTheme.typography.headlineSmall
                         )
                         Text(
-                            text = "Real hardware + Accessibility Autopilot + Hinglish playbooks (max 25)",
+                            text = "Real hardware + maya-ui HUD + GitHub Skill Store (max 25)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = { showCreateSkillDialog = true },
                         modifier = Modifier
@@ -145,15 +167,27 @@ fun SkillsDeckScreen(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(pendingConfirmation.previewDetails, style = MaterialTheme.typography.labelMedium)
                             Row {
-                                TextButton(onClick = viewModel::confirmPendingAction) { Text("Haan, Save Kar Do") }
-                                TextButton(onClick = viewModel::cancelPendingAction) { Text("Rehne Do") }
+                                TextButton(
+                                    onClick = viewModel::confirmPendingAction,
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("skills_confirm_save_button")
+                                ) {
+                                    Text("Haan, Save Kar Do")
+                                }
+                                TextButton(
+                                    onClick = viewModel::cancelPendingAction,
+                                    modifier = Modifier.heightIn(min = 48.dp)
+                                ) {
+                                    Text("Rehne Do")
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // 1. Live Hardware & OS Quick Deck
+            // 1. Live Hardware, Autopilot & HUD Telemetry Deck
             item {
                 Text(
                     text = "Live Phone Hardware & Autopilot",
@@ -195,30 +229,52 @@ fun SkillsDeckScreen(
                         modifier = Modifier.weight(1f),
                         icon = Icons.Filled.BatteryChargingFull,
                         title = "${telemetry.batteryPercent}% Battery",
-                        subtitle = if (telemetry.isCharging) "Charging active" else "On battery",
+                        subtitle = String.format(Locale.US, "%.1f°C • %s", hudSnapshot.temperatureCelsius, hudSnapshot.thermalStatusLabel),
                         active = telemetry.isCharging,
                         onClick = { viewModel.refreshTelemetry() }
                     )
                     HardwareTile(
                         modifier = Modifier.weight(1f),
-                        icon = Icons.AutoMirrored.Filled.VolumeUp,
-                        title = "Vol ${telemetry.mediaVolumePercent}%",
-                        subtitle = "Mode: ${telemetry.ringerModeLabel}",
+                        icon = Icons.Filled.Memory,
+                        title = "CPU ${hudSnapshot.cpuLoadPercent}%",
+                        subtitle = String.format(Locale.US, "RAM %.1f/%.1fG", hudSnapshot.ramUsedGb, hudSnapshot.ramTotalGb),
                         active = false,
-                        onClick = { onRunMacroInCockpit("Sound settings kholo") }
+                        onClick = { viewModel.pinSystemHudReportToBoard() }
                     )
                     HardwareTile(
                         modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.Alarm,
-                        title = "7:00 AM Alarm",
-                        subtitle = "System clock",
+                        icon = Icons.AutoMirrored.Filled.VolumeUp,
+                        title = "Vol ${telemetry.mediaVolumePercent}%",
+                        subtitle = "↓${SystemHudMonitor.formatNetRate(hudSnapshot.netDownloadKbps)}",
                         active = false,
-                        onClick = { onRunMacroInCockpit("Mujhe kal subah 7 baje jagana") }
+                        onClick = { onRunMacroInCockpit("Sound settings kholo") }
                     )
                 }
+                Spacer(modifier = Modifier.height(10.dp))
+                HardwareTile(
+                    modifier = Modifier.fillMaxWidth(),
+                    icon = Icons.Filled.Alarm,
+                    title = "Quick 7:00 AM System Alarm",
+                    subtitle = "Tap to set morning wake-up alarm via Maya",
+                    active = false,
+                    onClick = { onRunMacroInCockpit("Mujhe kal subah 7 baje jagana") }
+                )
             }
 
-            // 2. Built-in Macros
+            // 2. GitHub Skill Store & HunterisLive-1/maya-ui Sync Card
+            item {
+                GitHubSkillStoreCard(
+                    repoUrlInput = repoUrlInput,
+                    onRepoUrlChange = { repoUrlInput = it },
+                    storeState = gitHubSkillStoreState,
+                    builtInHudPack = viewModel.builtInMayaHudSkills(),
+                    onFetchRepo = { viewModel.fetchGitHubSkills(repoUrlInput) },
+                    onInstallHudPack = viewModel::requestInstallMayaHudSkillPack,
+                    onInstallSingleSkill = viewModel::requestInstallGitHubSkill
+                )
+            }
+
+            // 3. Built-in Macros
             item {
                 Text(
                     text = "Built-in Macros",
@@ -253,7 +309,7 @@ fun SkillsDeckScreen(
                 }
             }
 
-            // 3. Boss's Custom Skills, Macros & Event Triggers in Firestore
+            // 4. Boss's Custom Skills, Macros & Event Triggers in Firestore
             item {
                 Text(
                     text = "Boss's Saved Skills & Triggers",
@@ -271,7 +327,7 @@ fun SkillsDeckScreen(
                     if (skillsState.data.isEmpty()) {
                         item {
                             Text(
-                                text = "Abhi koi custom skill save nahi hai. Upar 'Iski Skill Banao' dabayein ya Maya ko bolein!",
+                                text = "Abhi koi custom skill save nahi hai. Upar 'maya-ui HUD Pack' ya 'Iski Skill Banao' dabayein!",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -323,6 +379,187 @@ fun SkillsDeckScreen(
                 showCreateSkillDialog = false
             }
         )
+    }
+}
+
+@Composable
+private fun GitHubSkillStoreCard(
+    repoUrlInput: String,
+    onRepoUrlChange: (String) -> Unit,
+    storeState: GitHubSkillStoreState,
+    builtInHudPack: List<GitHubRemoteSkill>,
+    onFetchRepo: () -> Unit,
+    onInstallHudPack: () -> Unit,
+    onInstallSingleSkill: (GitHubRemoteSkill) -> Unit
+) {
+    val accent = LocalPersonaAccent.current
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("github_skill_store_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.github_store_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = accent.primary
+                    )
+                    Text(
+                        text = "HunterisLive-1/maya-ui aur GitHub playbooks (SKILL.md) seedha Maya me jodein",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedButton(
+                    onClick = onInstallHudPack,
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("install_hud_pack_button")
+                ) {
+                    Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("HUD Pack")
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                AssistChip(
+                    onClick = { onRepoUrlChange("https://github.com/HunterisLive-1/maya-ui.git") },
+                    label = { Text("HunterisLive-1/maya-ui") },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("preset_repo_maya_ui")
+                )
+                AssistChip(
+                    onClick = { onRepoUrlChange("https://github.com/HunterisLive-1/mobile-maya-skills") },
+                    label = { Text("HunterisLive-1/mobile-maya-skills") },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("preset_repo_mobile_skills")
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedTextField(
+                    value = repoUrlInput,
+                    onValueChange = onRepoUrlChange,
+                    label = { Text("GitHub Repo URL ya owner/repo") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("github_skill_repo_input")
+                )
+                Button(
+                    onClick = onFetchRepo,
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("fetch_github_skills_button")
+                ) {
+                    Icon(Icons.Filled.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Sync")
+                }
+            }
+
+            when (storeState) {
+                is GitHubSkillStoreState.Idle -> {
+                    Text(
+                        text = "Built-in HunterisLive-1/maya-ui Skills (${builtInHudPack.size} ready):",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accent.secondary
+                    )
+                    builtInHudPack.forEach { skill ->
+                        RemoteSkillCandidateRow(skill = skill, onInstall = { onInstallSingleSkill(skill) })
+                    }
+                }
+
+                is GitHubSkillStoreState.Loading -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "'${storeState.repoQuery}' se skills fetch ho rahi hain…",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+
+                is GitHubSkillStoreState.Error -> {
+                    Text(
+                        text = storeState.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                is GitHubSkillStoreState.Loaded -> {
+                    Text(
+                        text = "${storeState.repoSlug} — ${storeState.skills.size} skills mili:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accent.secondary
+                    )
+                    storeState.skills.forEach { skill ->
+                        RemoteSkillCandidateRow(skill = skill, onInstall = { onInstallSingleSkill(skill) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RemoteSkillCandidateRow(
+    skill: GitHubRemoteSkill,
+    onInstall: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(skill.name, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = skill.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            TextButton(
+                onClick = onInstall,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("install_remote_skill_${skill.id}")
+            ) {
+                Text("Add +")
+            }
+        }
     }
 }
 

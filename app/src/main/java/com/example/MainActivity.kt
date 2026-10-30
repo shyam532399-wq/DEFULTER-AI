@@ -1,9 +1,13 @@
 package com.example
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
@@ -43,6 +47,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -53,6 +58,7 @@ import com.example.data.model.UserProfile
 import com.example.ui.MayaViewModel
 import com.example.ui.auth.AuthScreen
 import com.example.ui.auth.signOutUser
+import com.example.ui.components.DraggableFloatingMiniHud
 import com.example.ui.screens.AgentCockpitScreen
 import com.example.ui.screens.BoardStudioScreen
 import com.example.ui.screens.GuardianMemoryScreen
@@ -162,6 +168,17 @@ private fun AuthenticatedMayaShell(user: FirebaseUser) {
     val imageStudioState by viewModel.imageStudioState.collectAsStateWithLifecycle()
     val businessToolState by viewModel.businessToolState.collectAsStateWithLifecycle()
     val touchGuardAlert by viewModel.touchGuardAlert.collectAsStateWithLifecycle()
+    val hudSnapshot by viewModel.hudSnapshot.collectAsStateWithLifecycle()
+    val hudConfig by viewModel.hudConfig.collectAsStateWithLifecycle()
+    val audioLevel by viewModel.audioLevel.collectAsStateWithLifecycle()
+    val spectrumBands by viewModel.spectrumBands.collectAsStateWithLifecycle()
+    val gitHubSkillStoreState by viewModel.gitHubSkillStoreState.collectAsStateWithLifecycle()
+
+    val floatingMicPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) viewModel.startVoiceInput()
+    }
 
     val profile = (profileState as? DataUiState.Success)?.data
         ?: UserProfile(userId = user.uid, bossName = displayName)
@@ -236,7 +253,11 @@ private fun AuthenticatedMayaShell(user: FirebaseUser) {
                                 wakeWordEnabled = wakeWordEnabled,
                                 pendingConfirmation = pendingConfirmation,
                                 activeMission = activeMission,
-                                onNavigateToBoard = { currentTab = AgentTab.BOARD }
+                                onNavigateToBoard = { currentTab = AgentTab.BOARD },
+                                hudSnapshot = hudSnapshot,
+                                hudConfig = hudConfig,
+                                audioLevel = audioLevel,
+                                spectrumBands = spectrumBands
                             )
 
                             AgentTab.BOARD -> BoardStudioScreen(
@@ -257,7 +278,9 @@ private fun AuthenticatedMayaShell(user: FirebaseUser) {
                                 onRunMacroInCockpit = { cmd ->
                                     currentTab = AgentTab.MAYA
                                     viewModel.sendCommand(cmd)
-                                }
+                                },
+                                hudSnapshot = hudSnapshot,
+                                gitHubSkillStoreState = gitHubSkillStoreState
                             )
 
                             AgentTab.GUARDIAN -> GuardianMemoryScreen(
@@ -275,6 +298,32 @@ private fun AuthenticatedMayaShell(user: FirebaseUser) {
                                         scope = scope
                                     )
                                 }
+                            )
+                        }
+
+                        // Cross-tab Draggable Floating Mini-HUD Overlay (`HunterisLive-1/maya-ui`)
+                        if (hudConfig.floatingHudVisible) {
+                            DraggableFloatingMiniHud(
+                                snapshot = hudSnapshot,
+                                audioLevel = audioLevel,
+                                isListening = isListening,
+                                isSpeaking = isSpeaking,
+                                initialOffsetX = hudConfig.floatingOffsetX,
+                                initialOffsetY = hudConfig.floatingOffsetY,
+                                onOffsetCommitted = viewModel::updateFloatingHudOffset,
+                                onTriggerMic = {
+                                    if (isListening) {
+                                        viewModel.stopVoiceInput()
+                                    } else {
+                                        val granted = ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                        if (granted) viewModel.startVoiceInput()
+                                        else floatingMicPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                },
+                                onDismiss = { viewModel.setFloatingHudVisible(false) }
                             )
                         }
                     }

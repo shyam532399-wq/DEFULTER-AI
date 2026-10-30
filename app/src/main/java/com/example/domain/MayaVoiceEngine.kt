@@ -12,15 +12,30 @@ import android.util.Log
 import com.example.data.model.MayaPersona
 import com.example.data.model.MayaTone
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sin
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 private const val TAG = "MayaVoiceEngine"
+private const val SPECTRUM_BAND_COUNT = 24
 
 class MayaVoiceEngine(context: Context) {
 
     private val appContext = context.applicationContext
+    private val audioScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var ttsWaveJob: Job? = null
+
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var speechRecognizer: SpeechRecognizer? = null
@@ -37,6 +52,18 @@ class MayaVoiceEngine(context: Context) {
     private val _wakeWordModeEnabled = MutableStateFlow(false)
     val wakeWordModeEnabled: StateFlow<Boolean> = _wakeWordModeEnabled.asStateFlow()
 
+    /**
+     * Normalized 0f..1f audio energy & 24-band spectrum mirroring `maya-ui` (`audio_worker.py` + `mic_visualizer.py`),
+     * reacting to real microphone RMS dB during speech recognition and TTS output cadence when Maya speaks.
+     */
+    private val _audioLevel = MutableStateFlow(0f)
+    val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
+
+    private val _spectrumBands = MutableStateFlow(List(SPECTRUM_BAND_COUNT) { 0.08f })
+    val spectrumBands: StateFlow<List<Float>> = _spectrumBands.asStateFlow()
+
+    private var phaseTick: Double = 0.0
+
     private var onFinalSpeechResult: ((String) -> Unit)? = null
     private var onSpeechErrorCallback: ((String) -> Unit)? = null
 
@@ -51,20 +78,69 @@ class MayaVoiceEngine(context: Context) {
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         _isSpeaking.value = true
+                        startTtsOutputSpectrum()
                     }
 
                     override fun onDone(utteranceId: String?) {
                         _isSpeaking.value = false
+                        stopTtsOutputSpectrum()
                     }
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
                         _isSpeaking.value = false
+                        stopTtsOutputSpectrum()
                     }
                 })
                 ttsReady = true
             }
         }
+    }
+
+    private fun startTtsOutputSpectrum() {
+        ttsWaveJob?.cancel()
+        ttsWaveJob = audioScope.launch {
+            var step = 0
+            while (isActive && _isSpeaking.value) {
+                val syllablePulse = 0.35f + 0.45f * abs(sin(step * 0.42)).toFloat()
+                updateSpectrumFromNormalizedEnergy(syllablePulse)
+                step++
+                delay(55L)
+            }
+            resetSpectrumIdle()
+        }
+    }
+
+    private fun stopTtsOutputSpectrum() {
+        ttsWaveJob?.cancel()
+        ttsWaveJob = null
+        if (!_isListening.value) {
+            resetSpectrumIdle()
+        }
+    }
+
+    internal fun onMicRmsUpdated(rmsdB: Float) {
+        // Android SpeechRecognizer typically reports -2 dB (silence) to +12 dB (loud speech)
+        val normalized = ((rmsdB + 2f) / 12f).coerceIn(0.05f, 1f)
+        updateSpectrumFromNormalizedEnergy(normalized)
+    }
+
+    private fun updateSpectrumFromNormalizedEnergy(energy: Float) {
+        val clamped = energy.coerceIn(0f, 1f)
+        _audioLevel.value = clamped
+        phaseTick += 0.55
+        val center = (SPECTRUM_BAND_COUNT - 1) / 2.0
+        _spectrumBands.value = List(SPECTRUM_BAND_COUNT) { idx ->
+            val distFromCenter = abs(idx - center) / center
+            val centerWeight = (1.0 - distFromCenter * 0.62).toFloat()
+            val harmonic = (0.55 + 0.45 * abs(sin(phaseTick + idx * (PI / 5.5)))).toFloat()
+            (0.08f + clamped * centerWeight * harmonic).coerceIn(0.06f, 1f)
+        }
+    }
+
+    private fun resetSpectrumIdle() {
+        _audioLevel.value = 0f
+        _spectrumBands.value = List(SPECTRUM_BAND_COUNT) { 0.08f }
     }
 
     /**
@@ -100,6 +176,7 @@ class MayaVoiceEngine(context: Context) {
     fun stopSpeaking() {
         tts?.stop()
         _isSpeaking.value = false
+        stopTtsOutputSpectrum()
     }
 
     fun setWakeWordLoop(enabled: Boolean) {
@@ -135,10 +212,12 @@ class MayaVoiceEngine(context: Context) {
             }
             _partialTranscript.value = ""
             _isListening.value = true
+            updateSpectrumFromNormalizedEnergy(0.18f)
             speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start SpeechRecognizer", e)
             _isListening.value = false
+            resetSpectrumIdle()
             onError("Mic start nahi ho paya: ${e.localizedMessage ?: "unknown error"}")
         }
     }
@@ -150,10 +229,15 @@ class MayaVoiceEngine(context: Context) {
         }
         _isListening.value = false
         _partialTranscript.value = ""
+        if (!_isSpeaking.value) {
+            resetSpectrumIdle()
+        }
     }
 
     fun shutdown() {
         try {
+            ttsWaveJob?.cancel()
+            audioScope.cancel()
             speechRecognizer?.destroy()
             speechRecognizer = null
             tts?.stop()
@@ -168,17 +252,25 @@ class MayaVoiceEngine(context: Context) {
             _isListening.value = true
         }
 
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onBeginningOfSpeech() {
+            updateSpectrumFromNormalizedEnergy(0.32f)
+        }
+
+        override fun onRmsChanged(rmsdB: Float) {
+            onMicRmsUpdated(rmsdB)
+        }
+
         override fun onBufferReceived(buffer: ByteArray?) {}
 
         override fun onEndOfSpeech() {
             _isListening.value = false
+            resetSpectrumIdle()
         }
 
         override fun onError(error: Int) {
             _isListening.value = false
             _partialTranscript.value = ""
+            resetSpectrumIdle()
             if (_wakeWordModeEnabled.value && error in listOf(
                     SpeechRecognizer.ERROR_NO_MATCH,
                     SpeechRecognizer.ERROR_SPEECH_TIMEOUT
@@ -202,6 +294,7 @@ class MayaVoiceEngine(context: Context) {
         override fun onResults(results: Bundle?) {
             _isListening.value = false
             _partialTranscript.value = ""
+            resetSpectrumIdle()
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val rawText = matches?.firstOrNull()?.trim().orEmpty()
             if (rawText.isNotBlank()) {

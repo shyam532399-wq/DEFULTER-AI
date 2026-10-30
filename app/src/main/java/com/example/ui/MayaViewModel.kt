@@ -20,12 +20,18 @@ import com.example.data.model.UserProfile
 import com.example.data.repository.MayaRepository
 import com.example.domain.AgentDecision
 import com.example.domain.DeviceTelemetry
+import com.example.domain.GitHubRemoteSkill
+import com.example.domain.GitHubSkillStoreClient
+import com.example.domain.HudEffectTheme
+import com.example.domain.HudVisualConfig
 import com.example.domain.LiveInfoClient
 import com.example.domain.LiveInfoResult
 import com.example.domain.MayaAccessibilityService
 import com.example.domain.MayaAiBrain
 import com.example.domain.MayaVoiceEngine
 import com.example.domain.PhoneActionExecutor
+import com.example.domain.SystemHudMonitor
+import com.example.domain.SystemHudSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import java.util.Locale
 import java.util.UUID
@@ -88,6 +94,13 @@ sealed interface BusinessToolState {
     data class Error(val message: String) : BusinessToolState
 }
 
+sealed interface GitHubSkillStoreState {
+    data object Idle : GitHubSkillStoreState
+    data class Loading(val repoQuery: String) : GitHubSkillStoreState
+    data class Loaded(val repoSlug: String, val skills: List<GitHubRemoteSkill>) : GitHubSkillStoreState
+    data class Error(val message: String) : GitHubSkillStoreState
+}
+
 class MayaViewModel(
     private val repository: MayaRepository,
     private val phoneExecutor: PhoneActionExecutor,
@@ -95,7 +108,9 @@ class MayaViewModel(
     private val aiBrain: MayaAiBrain,
     private val liveInfoClient: LiveInfoClient,
     private val currentUserId: String,
-    private val initialDisplayName: String
+    private val initialDisplayName: String,
+    private val systemHudMonitor: SystemHudMonitor = SystemHudMonitor(phoneExecutor.appContext),
+    private val gitHubSkillStoreClient: GitHubSkillStoreClient = GitHubSkillStoreClient()
 ) : ViewModel() {
 
     val profileState: StateFlow<DataUiState<UserProfile>> = repository.observeProfile(currentUserId)
@@ -175,10 +190,26 @@ class MayaViewModel(
     private val _touchGuardAlert = MutableStateFlow<String?>(null)
     val touchGuardAlert: StateFlow<String?> = _touchGuardAlert.asStateFlow()
 
+    val hudSnapshot: StateFlow<SystemHudSnapshot> = systemHudMonitor.observeLiveHud()
+        .catch { err -> Log.w(TAG, "System HUD monitor error", err) }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS),
+            systemHudMonitor.readSnapshot()
+        )
+
+    private val _hudConfig = MutableStateFlow(systemHudMonitor.loadVisualConfig())
+    val hudConfig: StateFlow<HudVisualConfig> = _hudConfig.asStateFlow()
+
+    private val _gitHubSkillStoreState = MutableStateFlow<GitHubSkillStoreState>(GitHubSkillStoreState.Idle)
+    val gitHubSkillStoreState: StateFlow<GitHubSkillStoreState> = _gitHubSkillStoreState.asStateFlow()
+
     val isListening: StateFlow<Boolean> = voiceEngine.isListening
     val isSpeaking: StateFlow<Boolean> = voiceEngine.isSpeaking
     val partialTranscript: StateFlow<String> = voiceEngine.partialTranscript
     val wakeWordEnabled: StateFlow<Boolean> = voiceEngine.wakeWordModeEnabled
+    val audioLevel: StateFlow<Float> = voiceEngine.audioLevel
+    val spectrumBands: StateFlow<List<Float>> = voiceEngine.spectrumBands
     val autopilotConnected: StateFlow<Boolean> = MayaAccessibilityService.isConnected
 
     init {
@@ -291,6 +322,30 @@ class MayaViewModel(
             return
         }
 
+        // 4. Instant Maya AI HUD shortcuts (HunterisLive-1/maya-ui)
+        if (lowerCmd in setOf("floating hud on", "floating hud on karo", "float hud on", "floating hud dikhao")) {
+            setFloatingHudVisible(true)
+            appendMayaBubble("Floating Mini-HUD screen pe on kar diya hai ${currentProfile().bossName} — kahin bhi drag kar lijiye.", badge = "Floating HUD ON")
+            return
+        }
+        if (lowerCmd in setOf("floating hud off", "floating hud band", "floating hud band karo", "float hud off")) {
+            setFloatingHudVisible(false)
+            appendMayaBubble("Floating Mini-HUD band kar diya, ${currentProfile().bossName}.", badge = "Floating HUD OFF")
+            return
+        }
+        if (lowerCmd in setOf("quantum hud", "quantum mode", "quantum mode on karo", "quantum hud on karo")) {
+            setHudEffectTheme(HudEffectTheme.QUANTUM_GRID)
+            setHudExpanded(true)
+            appendMayaBubble("Quantum Grid HUD active hai, ${currentProfile().bossName}.", badge = "Quantum HUD")
+            return
+        }
+        if (lowerCmd in setOf("holographic hud", "holographic mode", "holographic mode on karo", "holographic hud on karo")) {
+            setHudEffectTheme(HudEffectTheme.HOLOGRAPHIC_SCAN)
+            setHudExpanded(true)
+            appendMayaBubble("Holographic Scanline HUD lag gaya, ${currentProfile().bossName}.", badge = "Holographic HUD")
+            return
+        }
+
         viewModelScope.launch {
             _isThinking.value = true
             refreshTelemetry()
@@ -303,6 +358,7 @@ class MayaViewModel(
             val recent = _messages.value.takeLast(8).map {
                 (if (it.isFromBoss) prof.bossName else persona.displayName) to it.text
             }
+            val latestHud = systemHudMonitor.readSnapshot()
 
             val decisionRes = aiBrain.processBossCommand(
                 userInput = trimmed,
@@ -315,7 +371,8 @@ class MayaViewModel(
                 skills = skills,
                 telemetry = _telemetry.value,
                 autopilotConnected = autopilotConnected.value,
-                recentTranscript = recent
+                recentTranscript = recent,
+                hudSnapshot = latestHud
             )
 
             _isThinking.value = false
@@ -850,6 +907,50 @@ class MayaViewModel(
                 appendMayaBubble(decision.spokenReply, badge = "Mission Plan (${steps.size} steps)")
             }
 
+            "GET_SYSTEM_HUD" -> {
+                val snap = systemHudMonitor.readSnapshot()
+                val summary = snap.toHinglishSpokenSummary(currentProfile().bossName)
+                val shouldPinBoard = decision.target.contains("board", ignoreCase = true) || savedBoardTitle == null
+                val title = "Maya AI HUD — System Diagnostic"
+                if (shouldPinBoard) {
+                    repository.createDocument(
+                        title = title,
+                        category = "dashboard",
+                        summary = summary,
+                        content = snap.toBoardDiagnosticMarkdown()
+                    )
+                }
+                appendMayaBubble(
+                    summary,
+                    badge = "System HUD • ${snap.healthLevel.label}",
+                    linkedBoardTitle = if (shouldPinBoard) title else savedBoardTitle
+                )
+            }
+
+            "CONTROL_HUD" -> {
+                val badge = applyHudControlTarget(decision.target)
+                appendMayaBubble(decision.spokenReply, badge = badge)
+            }
+
+            "SYNC_GITHUB_SKILLS" -> {
+                val repoTarget = decision.target.ifBlank { "HunterisLive-1/maya-ui" }
+                val res = gitHubSkillStoreClient.fetchSkillsFromRepo(repoTarget)
+                res.fold(
+                    onSuccess = { (slug, remoteSkills) ->
+                        _gitHubSkillStoreState.value = GitHubSkillStoreState.Loaded(slug, remoteSkills)
+                        appendMayaBubble(
+                            "${currentProfile().bossName}, '$slug' se ${remoteSkills.size} Maya skills fetch ho gayi hain — Skills tab me preview karke install kar lijiye.",
+                            badge = "GitHub Skills (${remoteSkills.size})"
+                        )
+                    },
+                    onFailure = { err ->
+                        val msg = err.localizedMessage ?: "GitHub skills sync nahi ho saka."
+                        _gitHubSkillStoreState.value = GitHubSkillStoreState.Error(msg)
+                        appendMayaBubble(msg, badge = "Skill Sync Error", isError = true)
+                    }
+                )
+            }
+
             else -> {
                 appendMayaBubble(
                     decision.spokenReply,
@@ -1131,6 +1232,161 @@ class MayaViewModel(
 
     fun deleteReminder(id: String) {
         viewModelScope.launch { repository.deleteReminder(id) }
+    }
+
+    // --- HunterisLive-1/maya-ui HUD Controls & GitHub Skill Store ---
+
+    fun reportLiveFps(fps: Int) {
+        systemHudMonitor.reportMeasuredFps(fps)
+    }
+
+    fun setHudExpanded(expanded: Boolean) {
+        val updated = _hudConfig.value.copy(hudExpanded = expanded)
+        _hudConfig.value = updated
+        systemHudMonitor.saveVisualConfig(updated)
+    }
+
+    fun toggleHudExpanded() {
+        setHudExpanded(!_hudConfig.value.hudExpanded)
+    }
+
+    fun setHudEffectTheme(theme: HudEffectTheme) {
+        val updated = _hudConfig.value.copy(effectTheme = theme)
+        _hudConfig.value = updated
+        systemHudMonitor.saveVisualConfig(updated)
+    }
+
+    fun setFloatingHudVisible(visible: Boolean) {
+        val updated = _hudConfig.value.copy(floatingHudVisible = visible)
+        _hudConfig.value = updated
+        systemHudMonitor.saveVisualConfig(updated)
+    }
+
+    fun toggleFloatingHud() {
+        setFloatingHudVisible(!_hudConfig.value.floatingHudVisible)
+    }
+
+    fun updateFloatingHudOffset(x: Float, y: Float) {
+        val updated = _hudConfig.value.copy(floatingOffsetX = x, floatingOffsetY = y)
+        _hudConfig.value = updated
+        systemHudMonitor.saveVisualConfig(updated)
+    }
+
+    private fun applyHudControlTarget(rawTarget: String): String {
+        val t = rawTarget.trim().lowercase(Locale.ROOT)
+        return when {
+            t.contains("float_off") || t.contains("floating_off") -> {
+                setFloatingHudVisible(false)
+                "Floating HUD OFF"
+            }
+            t.contains("float") -> {
+                setFloatingHudVisible(true)
+                "Floating HUD ON"
+            }
+            t.contains("collapse") || t.contains("hud_off") || t.contains("hide") -> {
+                setHudExpanded(false)
+                "HUD Collapsed"
+            }
+            t.contains("holographic") -> {
+                setHudEffectTheme(HudEffectTheme.HOLOGRAPHIC_SCAN)
+                setHudExpanded(true)
+                "Holographic HUD"
+            }
+            t.contains("minimal") -> {
+                setHudEffectTheme(HudEffectTheme.MINIMAL)
+                "Minimal HUD"
+            }
+            else -> {
+                setHudEffectTheme(HudEffectTheme.QUANTUM_GRID)
+                setHudExpanded(true)
+                "Quantum HUD"
+            }
+        }
+    }
+
+    fun pinSystemHudReportToBoard() {
+        viewModelScope.launch {
+            val snap = systemHudMonitor.readSnapshot()
+            val title = "Maya AI HUD — System Diagnostic"
+            val summary = snap.toHinglishSpokenSummary(currentProfile().bossName)
+            repository.createDocument(
+                title = title,
+                category = "dashboard",
+                summary = summary,
+                content = snap.toBoardDiagnosticMarkdown()
+            )
+            appendMayaBubble(
+                "System HUD report Maya Board pe pin kar di hai, ${currentProfile().bossName}.",
+                badge = "HUD Report Pinned",
+                linkedBoardTitle = title
+            )
+        }
+    }
+
+    fun builtInMayaHudSkills(): List<GitHubRemoteSkill> = gitHubSkillStoreClient.builtInMayaUiHudSkills()
+
+    fun fetchGitHubSkills(repoInput: String) {
+        val query = repoInput.trim().ifBlank { "HunterisLive-1/maya-ui" }
+        viewModelScope.launch {
+            _gitHubSkillStoreState.value = GitHubSkillStoreState.Loading(query)
+            val res = gitHubSkillStoreClient.fetchSkillsFromRepo(query)
+            res.fold(
+                onSuccess = { (slug, skills) ->
+                    _gitHubSkillStoreState.value = GitHubSkillStoreState.Loaded(slug, skills)
+                },
+                onFailure = { err ->
+                    _gitHubSkillStoreState.value = GitHubSkillStoreState.Error(
+                        err.localizedMessage ?: "GitHub repo se skills fetch nahi ho sakein."
+                    )
+                }
+            )
+        }
+    }
+
+    fun requestInstallGitHubSkill(skill: GitHubRemoteSkill) {
+        val existing = (skillsState.value as? DataUiState.Success)?.data.orEmpty()
+        if (existing.size >= 25) {
+            appendMayaBubble("Boss, max 25 skills limit poori ho chuki hai — pehle koi purani skill delete karein.", badge = "Skills Limit (25)", isError = true)
+            return
+        }
+        val ask = "Boss, '${skill.name}' skill (${skill.sourceRepo}) Maya me save kar doon?"
+        _pendingConfirmation.value = PendingConfirmation(
+            title = "Install GitHub Skill '${skill.name}'?",
+            previewDetails = "Source: ${skill.sourceRepo}\nTrigger: ${skill.trigger}\nSteps:\n${skill.stepsText.take(400)}",
+            promptSpoken = ask,
+            onConfirmExecute = {
+                repository.createSkillPlaybook("skill", skill.name, skill.trigger, skill.stepsText).getOrThrow()
+                "'${skill.name}' skill Maya me jud gayi, Boss."
+            }
+        )
+    }
+
+    fun requestInstallMayaHudSkillPack() {
+        val pack = gitHubSkillStoreClient.builtInMayaUiHudSkills()
+        val existingNames = (skillsState.value as? DataUiState.Success)?.data
+            .orEmpty()
+            .map { it.name.lowercase(Locale.ROOT) }
+            .toSet()
+        val toInstall = pack.filter { it.name.lowercase(Locale.ROOT) !in existingNames }
+        if (toInstall.isEmpty()) {
+            appendMayaBubble("Boss, maya-ui ke saare HUD skills pehle se installed hain!", badge = "HUD Pack Active")
+            return
+        }
+        val ask = "Boss, HunterisLive-1/maya-ui ke ${toInstall.size} HUD skills ek saath Maya me add kar doon?"
+        _pendingConfirmation.value = PendingConfirmation(
+            title = "Install maya-ui HUD Skill Pack (${toInstall.size} skills)?",
+            previewDetails = toInstall.joinToString("\n") { "• ${it.name} — \"${it.trigger}\"" },
+            promptSpoken = ask,
+            onConfirmExecute = {
+                val currentCount = (skillsState.value as? DataUiState.Success)?.data?.size ?: 0
+                val allowed = (25 - currentCount).coerceAtLeast(0)
+                val installing = toInstall.take(allowed)
+                for (item in installing) {
+                    repository.createSkillPlaybook("skill", item.name, item.trigger, item.stepsText).getOrThrow()
+                }
+                "maya-ui ke ${installing.size} HUD skills save ho gaye, Boss."
+            }
+        )
     }
 
     private fun appendMayaBubble(

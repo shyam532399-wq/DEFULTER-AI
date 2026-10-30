@@ -113,12 +113,16 @@ class MayaAiBrain {
                     "GENERATE_IMAGE",
                     "ARM_GUARD",
                     "DISARM_GUARD",
-                    "TRIGGER_SOS"
+                    "TRIGGER_SOS",
+                    // HunterisLive-1/maya-ui HUD & GitHub Skill Store
+                    "GET_SYSTEM_HUD",
+                    "CONTROL_HUD",
+                    "SYNC_GITHUB_SKILLS"
                 ),
-                description = "Exact phone, autopilot, live web, market, GitHub, or security action to execute."
+                description = "Exact phone, autopilot, live web, market, GitHub, HUD, or security action to execute."
             ),
             "target" to Schema.string(
-                description = "Button label to tap (tap_text first choice!), scroll direction (down/up/left/right), global nav (home/back/recents/notifications/lock), app name, city, stock/crypto ticker, GitHub owner/repo or username, URL, settings panel (wifi/bluetooth/sound/display/hotspot/accessibility/location/dnd), persona (maya/friday/venom), listen mode (boss_only/everyone), ringer (silent/vibrate/ring), media (play_pause/next/previous), timezone, or skill/doc title."
+                description = "Button label to tap (tap_text first choice!), scroll direction (down/up/left/right), global nav (home/back/recents/notifications/lock), app name, city, stock/crypto ticker, GitHub owner/repo or URL, HUD control target (hud_expand/hud_collapse/float_on/float_off/quantum/holographic/minimal), settings panel (wifi/bluetooth/sound/display/hotspot/accessibility/location/dnd), persona (maya/friday/venom), listen mode (boss_only/everyone), ringer (silent/vibrate/ring), media (play_pause/next/previous), timezone, or skill/doc title."
             ),
             "recipient" to Schema.string(description = "Contact name, Telegram @handle, or email recipient if applicable."),
             "phone" to Schema.string(description = "Phone number, target currency (e.g. INR for forex), or reminder schedule time."),
@@ -174,7 +178,8 @@ class MayaAiBrain {
         skills: List<SkillPlaybook>,
         telemetry: DeviceTelemetry,
         autopilotConnected: Boolean,
-        recentTranscript: List<Pair<String, String>>
+        recentTranscript: List<Pair<String, String>>,
+        hudSnapshot: SystemHudSnapshot = SystemHudSnapshot()
     ): Result<AgentDecision> = runCatching {
         val personaStyle = when (persona) {
             MayaPersona.MAYA -> "Tum Maya ho — Boss ki personal voice assistant, jo phone ke andar rehkar kaam karti hai, sirf baatein nahi. Tum ladki ki tarah bolti ho: warm, chhoti baatein, halki si shararat, par kaam ke time bilkul seedhi."
@@ -186,7 +191,7 @@ class MayaAiBrain {
             "- [${it.kind}] ${it.key}: ${it.value}"
         }
         val skillsBlock = if (skills.isEmpty()) {
-            "Built-in Macros: gemini image, chatgpt image, gemini video, chatgpt se poochho, gemini se poochho"
+            "Built-in Macros: gemini image, chatgpt image, gemini video, chatgpt se poochho, gemini se poochho, maya system hud, quantum hud, floating hud"
         } else {
             skills.filter { it.enabled }.take(15).joinToString("\n") {
                 "- [${it.kind}] ${it.name} (trigger: ${it.trigger}): ${it.stepsText.replace("\n", " ")}"
@@ -202,6 +207,11 @@ class MayaAiBrain {
             Language: Hinglish (Roman script) by default; ALWAYS reply in the exact language & script Boss writes/speaks in.
             Current Tone/Mood: ${tone.label}. Listen Mode: ${listenMode.label}.
             Live Phone Status: Battery=${telemetry.batteryPercent}% (charging=${telemetry.isCharging}), Torch=${telemetry.torchEnabled}, Volume=${telemetry.mediaVolumePercent}%, Ringer=${telemetry.ringerModeLabel}, ScreenAutopilotEnabled=$autopilotConnected.
+            Live Maya AI HUD Telemetry: CPU=${hudSnapshot.cpuLoadPercent}% (${hudSnapshot.cpuPeakMhz}MHz), RAM=${String.format(java.util.Locale.US, "%.1f/%.1fGB", hudSnapshot.ramUsedGb, hudSnapshot.ramTotalGb)} (${hudSnapshot.ramUsedPercent}%), Temp=${String.format(java.util.Locale.US, "%.1fC", hudSnapshot.temperatureCelsius)} (${hudSnapshot.thermalStatusLabel}), NetDown=${SystemHudMonitor.formatNetRate(hudSnapshot.netDownloadKbps)}, NetUp=${SystemHudMonitor.formatNetRate(hudSnapshot.netUploadKbps)}, FPS=${hudSnapshot.uiFps}.
+            MAYA HUD & GITHUB SKILL STORE ACTIONS:
+            - When Boss asks for CPU, RAM, temperature, network speed, FPS, or system performance -> use actionType="GET_SYSTEM_HUD" (set target="board" if Boss wants full diagnostic saved to Board).
+            - When Boss asks to toggle HUD, Floating HUD, Quantum grid, or Holographic mode -> use actionType="CONTROL_HUD" with target in ["hud_expand", "hud_collapse", "float_on", "float_off", "quantum", "holographic", "minimal"].
+            - When Boss asks to import/sync skills from GitHub (e.g. HunterisLive-1/maya-ui or HunterisLive-1/mobile-maya-skills) -> use actionType="SYNC_GITHUB_SKILLS" with target="<owner/repo or URL>".
             Boss Personal Wiki: $personalWiki
             Saved Memories & App Nicknames:
             $memoryBlock
