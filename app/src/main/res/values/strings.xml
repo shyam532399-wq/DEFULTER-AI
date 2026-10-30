@@ -27,4 +27,16 @@
     <string name="cd_close_floating_hud">Floating Mini-HUD band karein</string>
     <string name="hud_title_quantum">MAYA QUANTUM HUD</string>
     <string name="github_store_title">GitHub Skill Store &amp; Repo Sync</string>
+    <string name="api_key_chip_connect">Connect API Key</string>
+    <string name="api_key_chip_connected">API Key ✓</string>
+    <string name="api_key_card_title">API Key Connect (AI Engine)</string>
+    <string name="api_key_card_subtitle">Apni Gemini, OpenAI, Groq ya OpenRouter API key lagakar Maya ko seedha connect karein.</string>
+    <string name="api_key_input_label">API Key paste karein</string>
+    <string name="api_key_model_label">Model (optional — auto detect)</string>
+    <string name="api_key_verify_connect">Verify &amp; Connect Key</string>
+    <string name="api_key_disconnect">Disconnect Key</string>
+    <string name="api_key_paste">Paste</string>
+    <string name="api_key_get_gemini">Get Gemini Key</string>
+    <string name="cd_toggle_api_key_visibility">API key dikhayein ya chhupayein</string>
+    <string name="cd_close_api_dialog">API Key dialog band karein</string>
 </resources>

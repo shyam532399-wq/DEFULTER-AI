@@ -52,11 +52,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.DataUiState
 import com.example.data.model.MemoryItem
 import com.example.data.model.ReminderItem
 import com.example.data.model.UserProfile
 import com.example.ui.MayaViewModel
+import com.example.ui.components.ApiKeyConnectionCard
 import com.example.ui.theme.LocalPersonaAccent
 
 @Composable
@@ -71,6 +73,7 @@ fun GuardianMemoryScreen(
     BackHandler { onBackToCockpit() }
 
     val accent = LocalPersonaAccent.current
+    val apiKeyStatus by viewModel.apiKeyStatus.collectAsStateWithLifecycle()
     var bossNameDraft by remember(profile.bossName) { mutableStateOf(profile.bossName) }
     var wikiDraft by remember(profile.personalWiki) { mutableStateOf(profile.personalWiki) }
     var passphraseDraft by remember(profile.voicePassphrase) { mutableStateOf(profile.voicePassphrase) }
@@ -103,6 +106,17 @@ fun GuardianMemoryScreen(
                 contentPadding = PaddingValues(vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                // 0. API Key Connection Card (Gemini / OpenAI / Groq / OpenRouter)
+                item {
+                    ApiKeyConnectionCard(
+                        status = apiKeyStatus,
+                        onConnect = viewModel::connectApiKey,
+                        onDisconnect = viewModel::disconnectApiKey,
+                        onPasteFromClipboard = viewModel::readClipboardForApiKey,
+                        onOpenGeminiKeyPortal = viewModel::openGeminiApiKeyPortal
+                    )
+                }
+
                 // 1. Voice Guardian & Touch Guard Security Card (Section 3.13)
                 item {
                     Card(

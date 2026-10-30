@@ -20,6 +20,10 @@ import com.example.data.model.DataUiState
 import com.example.data.model.SkillPlaybook
 import com.example.data.model.UserProfile
 import com.example.data.repository.MayaRepository
+import com.example.domain.ApiKeyConfigStore
+import com.example.domain.ApiKeyConnectionStatus
+import com.example.domain.ApiKeyVerificationResult
+import com.example.domain.ApiProvider
 import com.example.domain.GitHubSkillStoreClient
 import com.example.domain.HudEffectTheme
 import com.example.domain.LiveInfoClient
@@ -65,6 +69,7 @@ class MayaCriticalUserJourneyTest {
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         context.getSharedPreferences("maya_hud_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences("maya_api_key_vault", Context.MODE_PRIVATE).edit().clear().commit()
         database = MayaDatabase.createInMemory(context)
     }
 
@@ -73,16 +78,21 @@ class MayaCriticalUserJourneyTest {
         database.close()
     }
 
-    private fun buildTestViewModel(uid: String = MayaRepository.LOCAL_BOSS_ID): MayaViewModel {
+    private fun buildTestViewModel(
+        uid: String = MayaRepository.LOCAL_BOSS_ID,
+        customKeyStore: ApiKeyConfigStore? = null
+    ): MayaViewModel {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        val keyStore = customKeyStore ?: ApiKeyConfigStore(context)
         return MayaViewModel(
             repository = MayaRepository(database.mayaDao(), uid),
             phoneExecutor = PhoneActionExecutor(context),
             voiceEngine = MayaVoiceEngine(context),
-            aiBrain = MayaAiBrain(),
+            aiBrain = MayaAiBrain(apiKeyStore = keyStore),
             liveInfoClient = LiveInfoClient(),
             currentUserId = uid,
-            initialDisplayName = "Boss"
+            initialDisplayName = "Boss",
+            apiKeyStore = keyStore
         )
     }
 
@@ -463,5 +473,92 @@ class MayaCriticalUserJourneyTest {
         assertTrue(vm.pendingConfirmation.value!!.title.contains("maya-ui HUD Skill Pack"))
         vm.cancelPendingAction()
         assertNull(vm.pendingConfirmation.value)
+    }
+
+    @Test
+    fun cuj9_apiKeyConnect_autoDetectsProvider_verifiesMasksPersistsAndDisconnects() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Provider prefix auto-detection
+        assertEquals(ApiProvider.GEMINI, ApiProvider.detectFromKey("AIzaSyDummyGeminiKey123456"))
+        assertEquals(ApiProvider.GROQ, ApiProvider.detectFromKey("gsk_DummyGroqKey123456789"))
+        assertEquals(ApiProvider.OPENROUTER, ApiProvider.detectFromKey("sk-or-v1-DummyRouterKey123"))
+        assertEquals(ApiProvider.OPENAI, ApiProvider.detectFromKey("sk-proj-DummyOpenAiKey1234"))
+
+        // 2. Deterministic verifier for local UI & vault encryption verification
+        val fakeVerifier = com.example.domain.ApiKeyVerifier { provider, apiKey, _, requestedModel ->
+            if (apiKey.contains("INVALID")) {
+                Result.failure(IllegalArgumentException("Invalid API key"))
+            } else {
+                Result.success(
+                    ApiKeyVerificationResult(
+                        resolvedModel = requestedModel.ifBlank { provider.defaultModel },
+                        resolvedImageModel = if (provider == ApiProvider.GEMINI) "gemini-2.5-flash-image" else ""
+                    )
+                )
+            }
+        }
+
+        val keyStore = ApiKeyConfigStore(context, verifier = fakeVerifier)
+        val vm = buildTestViewModel("cuj9_boss", customKeyStore = keyStore)
+
+        composeTestRule.mainClock.autoAdvance = false
+        composeTestRule.setContent {
+            MayaRootApp(viewModel = vm)
+        }
+        composeTestRule.mainClock.advanceTimeBy(150)
+
+        // 3. Cockpit header displays Connect API Key chip; tapping opens modal dialog
+        composeTestRule.onNodeWithTag("api_key_status_chip").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("api_key_status_chip").performClick()
+        composeTestRule.mainClock.advanceTimeBy(150)
+        composeTestRule.onNodeWithTag("api_key_connect_dialog").assertIsDisplayed()
+
+        // 4. Enter a Gemini key, verify & connect
+        val rawGeminiKey = "AIzaSyMayaBossSecretKey9876"
+        composeTestRule.onNodeWithTag("api_key_input").performTextInput(rawGeminiKey)
+        composeTestRule.mainClock.advanceTimeBy(100)
+        composeTestRule.onNodeWithTag("api_key_connect_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(250)
+
+        // Dialog closes automatically on success & status becomes Connected with masked key
+        val connected = vm.apiKeyStatus.value as? ApiKeyConnectionStatus.Connected
+        assertNotNull(connected)
+        assertEquals(ApiProvider.GEMINI, connected!!.provider)
+        assertEquals("AIzaSy••••9876", connected.maskedKey)
+        assertFalse(connected.maskedKey.contains("MayaBossSecret"))
+
+        // Verify persisted vault does NOT store plaintext raw key
+        val rawStoredCipher = context.getSharedPreferences("maya_api_key_vault", Context.MODE_PRIVATE)
+            .getString("encrypted_api_key", "")
+            .orEmpty()
+        assertTrue(rawStoredCipher.isNotBlank())
+        assertFalse(rawStoredCipher.contains(rawGeminiKey))
+
+        // Reloading a brand new ApiKeyConfigStore decrypts the saved key cleanly
+        val reloadedStore = ApiKeyConfigStore(context, verifier = fakeVerifier)
+        assertEquals(rawGeminiKey, reloadedStore.getActiveConfig()?.apiKey)
+
+        // 5. Navigate to Guardian tab -> ApiKeyConnectionCard shows Connected banner + Disconnect button
+        composeTestRule.onNodeWithTag("guardian_tab").performClick()
+        composeTestRule.mainClock.advanceTimeBy(200)
+        composeTestRule.onNodeWithTag("api_key_connection_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("api_key_connected_banner").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("api_key_disconnect_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(150)
+
+        assertTrue(vm.apiKeyStatus.value is ApiKeyConnectionStatus.BuiltIn)
+        assertNull(keyStore.getActiveConfig())
+
+        // 6. Voice / text command "API key connect karo" re-opens dialog on Cockpit
+        composeTestRule.onNodeWithTag("maya_tab").performClick()
+        composeTestRule.mainClock.advanceTimeBy(150)
+        assertFalse(vm.showApiKeyDialog.value)
+        vm.sendCommand("API key connect karo")
+        composeTestRule.mainClock.advanceTimeBy(150)
+        assertTrue(vm.showApiKeyDialog.value)
+        composeTestRule.onNodeWithTag("api_key_connect_dialog").assertIsDisplayed()
+
+        composeTestRule.mainClock.autoAdvance = true
     }
 }

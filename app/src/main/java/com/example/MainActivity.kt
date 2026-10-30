@@ -122,6 +122,8 @@ private fun MayaAppShell(viewModel: MayaViewModel) {
     val audioLevel by viewModel.audioLevel.collectAsStateWithLifecycle()
     val spectrumBands by viewModel.spectrumBands.collectAsStateWithLifecycle()
     val gitHubSkillStoreState by viewModel.gitHubSkillStoreState.collectAsStateWithLifecycle()
+    val apiKeyStatus by viewModel.apiKeyStatus.collectAsStateWithLifecycle()
+    val showApiKeyDialog by viewModel.showApiKeyDialog.collectAsStateWithLifecycle()
 
     val floatingMicPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -206,7 +208,9 @@ private fun MayaAppShell(viewModel: MayaViewModel) {
                                 hudSnapshot = hudSnapshot,
                                 hudConfig = hudConfig,
                                 audioLevel = audioLevel,
-                                spectrumBands = spectrumBands
+                                spectrumBands = spectrumBands,
+                                apiKeyStatus = apiKeyStatus,
+                                showApiKeyDialog = showApiKeyDialog
                             )
 
                             AgentTab.BOARD -> BoardStudioScreen(

@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
@@ -92,6 +93,7 @@ import com.example.data.model.ListenMode
 import com.example.data.model.MayaPersona
 import com.example.data.model.MayaTone
 import com.example.data.model.UserProfile
+import com.example.domain.ApiKeyConnectionStatus
 import com.example.domain.HudEffectTheme
 import com.example.domain.HudVisualConfig
 import com.example.domain.SystemHudSnapshot
@@ -99,6 +101,7 @@ import com.example.ui.ChatBubble
 import com.example.ui.MayaViewModel
 import com.example.ui.MissionState
 import com.example.ui.PendingConfirmation
+import com.example.ui.components.ApiKeyConnectDialog
 import com.example.ui.components.MayaReactiveOrb
 import com.example.ui.components.NeonAudioSpectrumVisualizer
 import com.example.ui.components.QuantumHudContainer
@@ -123,7 +126,9 @@ fun AgentCockpitScreen(
     hudSnapshot: SystemHudSnapshot = SystemHudSnapshot(),
     hudConfig: HudVisualConfig = HudVisualConfig(),
     audioLevel: Float = 0f,
-    spectrumBands: List<Float> = List(24) { 0.08f }
+    spectrumBands: List<Float> = List(24) { 0.08f },
+    apiKeyStatus: ApiKeyConnectionStatus = ApiKeyConnectionStatus.BuiltIn,
+    showApiKeyDialog: Boolean = false
 ) {
     val context = LocalContext.current
     val accent = LocalPersonaAccent.current
@@ -236,6 +241,8 @@ fun AgentCockpitScreen(
                 onSelectHudTheme = viewModel::setHudEffectTheme,
                 onToggleFloatingHud = viewModel::toggleFloatingHud,
                 onPinHudReport = viewModel::pinSystemHudReportToBoard,
+                apiKeyStatus = apiKeyStatus,
+                onOpenApiKeyDialog = viewModel::openApiKeyDialog,
                 onTapCenterpieceOrb = {
                     when {
                         isListening -> viewModel.stopVoiceInput()
@@ -251,6 +258,17 @@ fun AgentCockpitScreen(
                     }
                 }
             )
+
+            if (showApiKeyDialog) {
+                ApiKeyConnectDialog(
+                    status = apiKeyStatus,
+                    onConnect = viewModel::connectApiKey,
+                    onDisconnect = viewModel::disconnectApiKey,
+                    onPasteFromClipboard = viewModel::readClipboardForApiKey,
+                    onOpenGeminiKeyPortal = viewModel::openGeminiApiKeyPortal,
+                    onDismiss = viewModel::dismissApiKeyDialog
+                )
+            }
 
             // 2. Golden Rule 5: Risky Action Confirmation Gate Banner
             AnimatedVisibility(visible = pendingConfirmation != null) {
@@ -476,6 +494,8 @@ private fun PersonaCockpitHeader(
     onSelectHudTheme: (HudEffectTheme) -> Unit,
     onToggleFloatingHud: () -> Unit,
     onPinHudReport: () -> Unit,
+    apiKeyStatus: ApiKeyConnectionStatus,
+    onOpenApiKeyDialog: () -> Unit,
     onTapCenterpieceOrb: () -> Unit
 ) {
     val accent = LocalPersonaAccent.current
@@ -627,7 +647,7 @@ private fun PersonaCockpitHeader(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Persona + Listen Mode + Tone Selector Row
+            // API Key + Persona + Listen Mode + Tone Selector Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -635,6 +655,28 @@ private fun PersonaCockpitHeader(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val connectedKey = apiKeyStatus as? ApiKeyConnectionStatus.Connected
+                FilterChip(
+                    selected = connectedKey != null,
+                    onClick = onOpenApiKeyDialog,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.Key,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    label = {
+                        Text(
+                            if (connectedKey != null) "${connectedKey.provider.shortBadge} Key ✓"
+                            else stringResource(R.string.api_key_chip_connect)
+                        )
+                    },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("api_key_status_chip")
+                )
+
                 MayaPersona.entries.forEach { p ->
                     FilterChip(
                         selected = p == activePersona,

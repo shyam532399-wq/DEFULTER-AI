@@ -38,7 +38,84 @@ data class AgentDecision(
     val missionSteps: List<String> = emptyList()
 )
 
-class MayaAiBrain {
+class MayaAiBrain(
+    private val apiKeyStore: ApiKeyConfigStore? = null,
+    private val customInferenceClient: CustomApiInferenceClient = CustomApiInferenceClient()
+) {
+
+    private val supportedActionTypes = listOf(
+        "NONE",
+        // 3.1 Accessibility & Screen Autopilot
+        "SCREEN_TAP_TEXT",
+        "SCREEN_TYPE_TEXT",
+        "SCREEN_SCROLL",
+        "SCREEN_READ",
+        "WAIT_FOR_TEXT",
+        "GLOBAL_NAV",
+        "START_MISSION",
+        "WAIT_DELAY",
+        // 3.1 & 3.2 Phone Hardware, Settings & Status
+        "SET_TORCH_ON",
+        "SET_TORCH_OFF",
+        "GET_BATTERY",
+        "SET_VOLUME",
+        "SET_RINGER",
+        "MEDIA_CONTROL",
+        "OPEN_SETTINGS",
+        "OPEN_APP",
+        "LIST_APPS",
+        "OPEN_URL",
+        "GET_TIME",
+        "READ_CLIPBOARD",
+        "WRITE_CLIPBOARD",
+        "SHARE_TEXT",
+        // 3.3 Calls, WhatsApp, Telegram, SMS, Email, Contacts
+        "SEND_WHATSAPP",
+        "SEND_TELEGRAM",
+        "SEND_SMS",
+        "SEND_EMAIL",
+        "DIAL_CALL",
+        "SAVE_CONTACT",
+        // 3.4 Music & Video
+        "PLAY_YOUTUBE",
+        "PLAY_SPOTIFY",
+        // 3.5 Reminders, Alarms, Timers, Calendar, Board Docs
+        "SET_ALARM",
+        "SHOW_ALARMS",
+        "SET_TIMER",
+        "ADD_CALENDAR",
+        "ADD_REMINDER",
+        "CREATE_BOARD_DOC",
+        "DELETE_BOARD_DOC",
+        // 3.6 Info, Maps, Web Search, URL Reader, Research
+        "NAVIGATE_TO",
+        "SEARCH_WEB",
+        "READ_URL",
+        "GET_WEATHER",
+        "GET_NEWS",
+        // 3.7 Markets: Stocks, Crypto, Forex, Watchlist
+        "GET_STOCK",
+        "GET_CRYPTO",
+        "GET_FOREX",
+        "ADD_WATCHLIST",
+        "SCAN_WATCHLIST",
+        // 3.9, 3.10, 3.13, 4 Memory, Skills, GitHub, Personas, Security
+        "GITHUB_LOOKUP",
+        "REMEMBER_FACT",
+        "REMEMBER_APP_NICKNAME",
+        "CREATE_SKILL_PREVIEW",
+        "DELETE_SKILL",
+        "SWITCH_PERSONA",
+        "SET_LISTEN_MODE",
+        "GENERATE_IMAGE",
+        "ARM_GUARD",
+        "DISARM_GUARD",
+        "TRIGGER_SOS",
+        // HunterisLive-1/maya-ui HUD & GitHub Skill Store
+        "GET_SYSTEM_HUD",
+        "CONTROL_HUD",
+        "SYNC_GITHUB_SKILLS"
+    )
 
     private val decisionSchema = Schema.obj(
         properties = mapOf(
@@ -46,79 +123,7 @@ class MayaAiBrain {
                 description = "1 to 3 short sentences in Boss's language/script (default Hinglish Roman script). Most important info FIRST. NEVER include URLs, NEVER say the word 'tool', max 1 emoji."
             ),
             "actionType" to Schema.enumeration(
-                values = listOf(
-                    "NONE",
-                    // 3.1 Accessibility & Screen Autopilot
-                    "SCREEN_TAP_TEXT",
-                    "SCREEN_TYPE_TEXT",
-                    "SCREEN_SCROLL",
-                    "SCREEN_READ",
-                    "WAIT_FOR_TEXT",
-                    "GLOBAL_NAV",
-                    "START_MISSION",
-                    "WAIT_DELAY",
-                    // 3.1 & 3.2 Phone Hardware, Settings & Status
-                    "SET_TORCH_ON",
-                    "SET_TORCH_OFF",
-                    "GET_BATTERY",
-                    "SET_VOLUME",
-                    "SET_RINGER",
-                    "MEDIA_CONTROL",
-                    "OPEN_SETTINGS",
-                    "OPEN_APP",
-                    "LIST_APPS",
-                    "OPEN_URL",
-                    "GET_TIME",
-                    "READ_CLIPBOARD",
-                    "WRITE_CLIPBOARD",
-                    "SHARE_TEXT",
-                    // 3.3 Calls, WhatsApp, Telegram, SMS, Email, Contacts
-                    "SEND_WHATSAPP",
-                    "SEND_TELEGRAM",
-                    "SEND_SMS",
-                    "SEND_EMAIL",
-                    "DIAL_CALL",
-                    "SAVE_CONTACT",
-                    // 3.4 Music & Video
-                    "PLAY_YOUTUBE",
-                    "PLAY_SPOTIFY",
-                    // 3.5 Reminders, Alarms, Timers, Calendar, Board Docs
-                    "SET_ALARM",
-                    "SHOW_ALARMS",
-                    "SET_TIMER",
-                    "ADD_CALENDAR",
-                    "ADD_REMINDER",
-                    "CREATE_BOARD_DOC",
-                    "DELETE_BOARD_DOC",
-                    // 3.6 Info, Maps, Web Search, URL Reader, Research
-                    "NAVIGATE_TO",
-                    "SEARCH_WEB",
-                    "READ_URL",
-                    "GET_WEATHER",
-                    "GET_NEWS",
-                    // 3.7 Markets: Stocks, Crypto, Forex, Watchlist
-                    "GET_STOCK",
-                    "GET_CRYPTO",
-                    "GET_FOREX",
-                    "ADD_WATCHLIST",
-                    "SCAN_WATCHLIST",
-                    // 3.9, 3.10, 3.13, 4 Memory, Skills, GitHub, Personas, Security
-                    "GITHUB_LOOKUP",
-                    "REMEMBER_FACT",
-                    "REMEMBER_APP_NICKNAME",
-                    "CREATE_SKILL_PREVIEW",
-                    "DELETE_SKILL",
-                    "SWITCH_PERSONA",
-                    "SET_LISTEN_MODE",
-                    "GENERATE_IMAGE",
-                    "ARM_GUARD",
-                    "DISARM_GUARD",
-                    "TRIGGER_SOS",
-                    // HunterisLive-1/maya-ui HUD & GitHub Skill Store
-                    "GET_SYSTEM_HUD",
-                    "CONTROL_HUD",
-                    "SYNC_GITHUB_SKILLS"
-                ),
+                values = supportedActionTypes,
                 description = "Exact phone, autopilot, live web, market, GitHub, HUD, or security action to execute."
             ),
             "target" to Schema.string(
@@ -247,11 +252,20 @@ class MayaAiBrain {
         """.trimIndent()
 
         try {
-            val response = withTimeout(60_000L) {
-                agentModel.generateContent(fullPrompt)
+            val activeKey = apiKeyStore?.getActiveConfig()
+            val rawJson = withTimeout(60_000L) {
+                if (activeKey != null) {
+                    customInferenceClient.generateStructuredDecisionJson(
+                        config = activeKey,
+                        fullPrompt = fullPrompt,
+                        actionTypes = supportedActionTypes
+                    )
+                } else {
+                    val response = agentModel.generateContent(fullPrompt)
+                    response.text ?: throw IllegalStateException("Empty response from Gemini.")
+                }
             }
-            val rawJson = response.text ?: throw IllegalStateException("Empty response from Gemini.")
-            val json = JSONObject(rawJson)
+            val json = CustomApiInferenceClient.extractCleanJsonObject(rawJson)
             val stepsArray = json.optJSONArray("missionSteps")
             val steps = if (stepsArray != null) {
                 (0 until stepsArray.length()).mapNotNull { idx ->
@@ -306,10 +320,14 @@ class MayaAiBrain {
             $untrustedText
         """.trimIndent()
 
-        val response = withTimeout(60_000L) {
-            textModel.generateContent(prompt)
+        val activeKey = apiKeyStore?.getActiveConfig()
+        val full = withTimeout(60_000L) {
+            if (activeKey != null) {
+                customInferenceClient.generateText(activeKey, prompt).trim()
+            } else {
+                textModel.generateContent(prompt).text?.trim().orEmpty()
+            }
         }
-        val full = response.text?.trim().orEmpty()
         if (full.isBlank()) throw IllegalStateException("Webpage summary khali aaya, Boss.")
         val lines = full.lines().filter { it.isNotBlank() }
         val spoken = lines.firstOrNull()?.replace(Regex("[#*_`>]"), "")?.trim()
@@ -334,15 +352,20 @@ class MayaAiBrain {
         """.trimIndent()
 
         try {
-            val response = withTimeout(60_000L) {
-                textModel.generateContent(
-                    content {
-                        image(bitmap)
-                        text(visionPrompt)
-                    }
-                )
+            val activeKey = apiKeyStore?.getActiveConfig()
+            val visionText = withTimeout(60_000L) {
+                if (activeKey != null) {
+                    customInferenceClient.generateVisionText(activeKey, bitmap, visionPrompt).trim()
+                } else {
+                    textModel.generateContent(
+                        content {
+                            image(bitmap)
+                            text(visionPrompt)
+                        }
+                    ).text?.trim().orEmpty()
+                }
             }
-            response.text?.trim().takeUnless { it.isNullOrBlank() }
+            visionText.takeUnless { it.isBlank() }
                 ?: throw IllegalStateException("Image analysis empty aaya.")
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Vision timed out", e)
@@ -360,11 +383,17 @@ class MayaAiBrain {
      */
     suspend fun generateStudioImage(prompt: String): Result<Bitmap> = runCatching {
         try {
+            val activeKey = apiKeyStore?.getActiveConfig()
             val bitmap = withTimeout(60_000L) {
-                val response = imageModel.generateContent(prompt)
-                response.candidates.firstOrNull()
-                    ?.content?.parts?.filterIsInstance<ImagePart>()
-                    ?.firstOrNull()?.image
+                val customBmp = if (activeKey != null) {
+                    runCatching { customInferenceClient.generateImage(activeKey, prompt) }.getOrNull()
+                } else null
+                customBmp ?: run {
+                    val response = imageModel.generateContent(prompt)
+                    response.candidates.firstOrNull()
+                        ?.content?.parts?.filterIsInstance<ImagePart>()
+                        ?.firstOrNull()?.image
+                }
             }
             bitmap ?: throw IllegalStateException("Model ne image return nahi ki. Prompt thoda badal ke dekhein, Boss.")
         } catch (e: TimeoutCancellationException) {
@@ -426,10 +455,16 @@ class MayaAiBrain {
         }
 
         try {
-            val response = withTimeout(60_000L) {
-                textModel.generateContent("$instruction\n\nINPUT DATA:\n$rawInput")
+            val activeKey = apiKeyStore?.getActiveConfig()
+            val fullPrompt = "$instruction\n\nINPUT DATA:\n$rawInput"
+            val outText = withTimeout(60_000L) {
+                if (activeKey != null) {
+                    customInferenceClient.generateText(activeKey, fullPrompt).trim()
+                } else {
+                    textModel.generateContent(fullPrompt).text?.trim().orEmpty()
+                }
             }
-            response.text?.trim().takeUnless { it.isNullOrBlank() }
+            outText.takeUnless { it.isBlank() }
                 ?: throw IllegalStateException("Empty output from model.")
         } catch (e: TimeoutCancellationException) {
             throw IllegalStateException("60s timeout ho gaya, Boss.")

@@ -18,6 +18,9 @@ import com.example.data.model.SkillPlaybook
 import com.example.data.model.UserProfile
 import com.example.data.repository.MayaRepository
 import com.example.domain.AgentDecision
+import com.example.domain.ApiKeyConfigStore
+import com.example.domain.ApiKeyConnectionStatus
+import com.example.domain.ApiProvider
 import com.example.domain.DeviceTelemetry
 import com.example.domain.GitHubRemoteSkill
 import com.example.domain.GitHubSkillStoreClient
@@ -108,7 +111,8 @@ class MayaViewModel(
     private val currentUserId: String,
     private val initialDisplayName: String,
     private val systemHudMonitor: SystemHudMonitor = SystemHudMonitor(phoneExecutor.appContext),
-    private val gitHubSkillStoreClient: GitHubSkillStoreClient = GitHubSkillStoreClient()
+    private val gitHubSkillStoreClient: GitHubSkillStoreClient = GitHubSkillStoreClient(),
+    private val apiKeyStore: ApiKeyConfigStore = ApiKeyConfigStore(phoneExecutor.appContext)
 ) : ViewModel() {
 
     val profileState: StateFlow<DataUiState<UserProfile>> = repository.observeProfile(currentUserId)
@@ -202,6 +206,11 @@ class MayaViewModel(
     private val _gitHubSkillStoreState = MutableStateFlow<GitHubSkillStoreState>(GitHubSkillStoreState.Idle)
     val gitHubSkillStoreState: StateFlow<GitHubSkillStoreState> = _gitHubSkillStoreState.asStateFlow()
 
+    val apiKeyStatus: StateFlow<ApiKeyConnectionStatus> = apiKeyStore.status
+
+    private val _showApiKeyDialog = MutableStateFlow(false)
+    val showApiKeyDialog: StateFlow<Boolean> = _showApiKeyDialog.asStateFlow()
+
     val isListening: StateFlow<Boolean> = voiceEngine.isListening
     val isSpeaking: StateFlow<Boolean> = voiceEngine.isSpeaking
     val partialTranscript: StateFlow<String> = voiceEngine.partialTranscript
@@ -229,6 +238,45 @@ class MayaViewModel(
     fun openAccessibilityAutopilotSettings() {
         val outcome = phoneExecutor.openAccessibilitySettings()
         appendMayaBubble(outcome.messageHinglish, badge = "Autopilot Settings")
+    }
+
+    fun openApiKeyDialog() {
+        _showApiKeyDialog.value = true
+    }
+
+    fun dismissApiKeyDialog() {
+        _showApiKeyDialog.value = false
+    }
+
+    fun readClipboardForApiKey(): String = phoneExecutor.readClipboard()
+
+    fun openGeminiApiKeyPortal() {
+        phoneExecutor.openUrl("https://aistudio.google.com/apikey")
+    }
+
+    fun connectApiKey(rawKey: String, provider: ApiProvider, customModel: String = "") {
+        viewModelScope.launch {
+            val res = apiKeyStore.verifyAndConnect(
+                rawKey = rawKey,
+                selectedProvider = provider,
+                customModel = customModel
+            )
+            res.onSuccess { connected ->
+                _showApiKeyDialog.value = false
+                appendMayaBubble(
+                    "${connected.provider.displayName} API key connect ho gayi ${currentProfile().bossName} (Model: ${connected.activeModel}). Ab aapki key se kaam chalega.",
+                    badge = "API Connected • ${connected.provider.shortBadge}"
+                )
+            }
+        }
+    }
+
+    fun disconnectApiKey() {
+        apiKeyStore.disconnect()
+        appendMayaBubble(
+            "Custom API key disconnect kar di hai, ${currentProfile().bossName}. Built-in mode active hai.",
+            badge = "Built-in Mode"
+        )
     }
 
     fun toggleVoiceReply() {
@@ -341,6 +389,26 @@ class MayaViewModel(
             setHudEffectTheme(HudEffectTheme.HOLOGRAPHIC_SCAN)
             setHudExpanded(true)
             appendMayaBubble("Holographic Scanline HUD lag gaya, ${currentProfile().bossName}.", badge = "Holographic HUD")
+            return
+        }
+
+        // 5. Instant API Key Connect & Status shortcuts
+        if (lowerCmd in setOf("api key", "api key connect", "api key connect karo", "connect api key", "api key dalo", "api key set karo", "api connect karo")) {
+            _showApiKeyDialog.value = true
+            appendMayaBubble(
+                "Ji ${currentProfile().bossName}, API Key Connect box khol diya hai — apni Gemini, OpenAI ya Groq key paste karke Connect daba dijiye.",
+                badge = "API Key Connect"
+            )
+            return
+        }
+        if (lowerCmd in setOf("api status", "api key status", "kaunsi api connected hai")) {
+            val st = apiKeyStatus.value
+            val msg = if (st is ApiKeyConnectionStatus.Connected) {
+                "${st.provider.displayName} API key connected hai, ${currentProfile().bossName} (Model: ${st.activeModel})."
+            } else {
+                "Abhi Built-in AI mode active hai, ${currentProfile().bossName}. 'API key connect karo' bolkar apni key jod sakte hain."
+            }
+            appendMayaBubble(msg, badge = "API Status")
             return
         }
 
@@ -1429,14 +1497,16 @@ class MayaViewModel(
                     val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]) {
                         "APPLICATION_KEY missing from CreationExtras"
                     }
+                    val keyStore = ApiKeyConfigStore(app)
                     MayaViewModel(
                         repository = MayaRepository(app, currentUserId),
                         phoneExecutor = PhoneActionExecutor(app),
                         voiceEngine = MayaVoiceEngine(app),
-                        aiBrain = MayaAiBrain(),
+                        aiBrain = MayaAiBrain(apiKeyStore = keyStore),
                         liveInfoClient = LiveInfoClient(),
                         currentUserId = currentUserId,
-                        initialDisplayName = displayName.ifBlank { "Boss" }
+                        initialDisplayName = displayName.ifBlank { "Boss" },
+                        apiKeyStore = keyStore
                     )
                 }
             }
