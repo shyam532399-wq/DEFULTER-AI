@@ -21,7 +21,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -67,9 +66,7 @@ fun GuardianMemoryScreen(
     memoriesState: DataUiState<List<MemoryItem>>,
     remindersState: DataUiState<List<ReminderItem>>,
     touchGuardAlert: String?,
-    userEmail: String?,
-    onBackToCockpit: () -> Unit,
-    onSignOut: () -> Unit
+    onBackToCockpit: () -> Unit
 ) {
     BackHandler { onBackToCockpit() }
 
@@ -406,19 +403,37 @@ fun GuardianMemoryScreen(
                     }
                 }
 
-                // 5. Account Sign-Out
+                // 5. On-Device Private Vault Status (No Login Required)
                 item {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = onSignOut,
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                        shape = RoundedCornerShape(18.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .testTag("sign_out_button")
+                            .testTag("local_vault_status_card")
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Sign Out (${userEmail ?: "Google Account"})")
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Shield,
+                                contentDescription = null,
+                                tint = accent.primary
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "On-Device Local Mode Active • Login Ki Zaroorat Nahi",
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                                Text(
+                                    text = "Boss ka Wiki, Board documents, Skills aur Memories seedha phone ke private Room vault me safe hain.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                     Spacer(modifier = Modifier.height(24.dp))
                 }

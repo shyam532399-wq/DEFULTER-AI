@@ -1,70 +1,46 @@
 package com.example.data.repository
 
 import android.content.Context
-import com.example.R
-import com.example.core.OperationType
-import com.example.core.handleFirestoreError
+import com.example.data.local.MayaDao
+import com.example.data.local.MayaDatabase
 import com.example.data.model.BoardDocument
 import com.example.data.model.MemoryItem
 import com.example.data.model.ReminderItem
 import com.example.data.model.SkillPlaybook
 import com.example.data.model.UserProfile
-import com.google.firebase.Timestamp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.snapshots
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.tasks.await
 
 class MayaRepository(
-    private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance()
+    private val dao: MayaDao,
+    private val defaultUserId: String = LOCAL_BOSS_ID
 ) {
-    constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        )
+    constructor(context: Context, userId: String = LOCAL_BOSS_ID) : this(
+        dao = MayaDatabase.getInstance(context).mayaDao(),
+        defaultUserId = userId
     )
 
-    private fun requireUserId(): String {
-        return auth.currentUser?.uid
-            ?: throw IllegalStateException("User must be signed in with Google before accessing Firestore.")
+    // --- 1. UserProfile ---
+
+    fun observeProfile(userId: String = defaultUserId): Flow<UserProfile?> {
+        return dao.observeProfile(userId.ifBlank { defaultUserId })
     }
 
-    // --- 1. UserProfile (/users/{userId}) ---
-
-    fun observeProfile(userId: String): Flow<UserProfile?> {
-        val docRef = db.collection("users").document(userId)
-        return docRef.snapshots()
-            .map { snapshot ->
-                if (snapshot.exists()) {
-                    snapshot.toObject(UserProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                } else {
-                    null
-                }
-            }
-            .catch { error ->
-                if (error is Exception) handleFirestoreError(error, OperationType.GET, docRef.path)
-                throw error
-            }
-    }
-
-    suspend fun ensureDefaultProfile(userId: String, fallbackName: String = "Boss"): Result<UserProfile> = runCatching {
-        val docRef = db.collection("users").document(userId)
+    suspend fun ensureDefaultProfile(
+        userId: String = defaultUserId,
+        fallbackName: String = "Boss"
+    ): Result<UserProfile> = runCatching {
+        val resolvedId = userId.ifBlank { defaultUserId }
         try {
-            val snap = docRef.get().await()
-            val existing = snap.toObject(UserProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            val existing = dao.getProfileOnce(resolvedId)
             if (existing != null) {
                 existing
             } else {
+                val now = System.currentTimeMillis()
                 val safeName = fallbackName.trim().ifBlank { "Boss" }.take(60)
                 val initial = UserProfile(
-                    userId = userId,
+                    userId = resolvedId,
                     bossName = safeName,
                     persona = "maya",
                     tone = "calm",
@@ -75,55 +51,46 @@ class MayaRepository(
                     voiceModel = "powerful",
                     guardArmed = false,
                     touchGuardArmed = false,
-                    createdAt = null,
-                    updatedAt = null
+                    createdAtMillis = now,
+                    updatedAtMillis = now
                 )
-                docRef.set(initial).await()
-                val created = docRef.get().await()
-                created.toObject(UserProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE) ?: initial
+                dao.upsertProfile(initial)
+                initial
             }
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.WRITE, docRef.path)
             throw e
         }
     }
 
     suspend fun updateProfileFields(fields: Map<String, Any>): Result<Unit> = runCatching {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid)
         try {
-            val payload = fields.filterValues { it != null } + mapOf(
-                "updatedAt" to FieldValue.serverTimestamp()
+            val current = dao.getProfileOnce(defaultUserId)
+                ?: ensureDefaultProfile(defaultUserId, "Boss").getOrThrow()
+            val now = System.currentTimeMillis()
+            val updated = current.copy(
+                bossName = (fields["bossName"] as? String)?.trim()?.ifBlank { current.bossName }?.take(60)
+                    ?: current.bossName,
+                persona = (fields["persona"] as? String) ?: current.persona,
+                tone = (fields["tone"] as? String) ?: current.tone,
+                listenMode = (fields["listenMode"] as? String) ?: current.listenMode,
+                personalWiki = (fields["personalWiki"] as? String)?.take(4000) ?: current.personalWiki,
+                voiceEnrolled = (fields["voiceEnrolled"] as? Boolean) ?: current.voiceEnrolled,
+                voicePassphrase = (fields["voicePassphrase"] as? String)?.take(200) ?: current.voicePassphrase,
+                voiceModel = (fields["voiceModel"] as? String) ?: current.voiceModel,
+                guardArmed = (fields["guardArmed"] as? Boolean) ?: current.guardArmed,
+                touchGuardArmed = (fields["touchGuardArmed"] as? Boolean) ?: current.touchGuardArmed,
+                updatedAtMillis = now
             )
-            docRef.update(payload).await()
+            dao.upsertProfile(updated)
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             throw e
         }
     }
 
-    // --- 2. BoardDocument (/users/{userId}/documents/{docId}) ---
+    // --- 2. BoardDocument ---
 
-    fun observeDocuments(userId: String): Flow<List<BoardDocument>> {
-        val colPath = "users/$userId/documents"
-        return db.collection("users").document(userId).collection("documents")
-            .whereEqualTo("userId", userId)
-            .snapshots()
-            .map { snapshot ->
-                snapshot.toObjects(BoardDocument::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                    .sortedWith(
-                        compareByDescending<BoardDocument> { it.pinned }
-                            .thenByDescending { it.updatedAt ?: it.createdAt ?: Timestamp(0, 0) }
-                    )
-            }
-            .catch { error ->
-                if (error is Exception) handleFirestoreError(error, OperationType.LIST, colPath)
-                throw error
-            }
+    fun observeDocuments(userId: String = defaultUserId): Flow<List<BoardDocument>> {
+        return dao.observeDocuments(userId.ifBlank { defaultUserId })
     }
 
     suspend fun createDocument(
@@ -133,139 +100,100 @@ class MayaRepository(
         content: String,
         pinned: Boolean = false
     ): Result<String> = runCatching {
-        val uid = requireUserId()
-        val colRef = db.collection("users").document(uid).collection("documents")
         try {
+            val now = System.currentTimeMillis()
+            val id = UUID.randomUUID().toString()
             val validCategory = category.lowercase().takeIf {
                 it in setOf("research", "marketing", "reviews", "email", "market", "note", "dashboard")
             } ?: "note"
             val doc = BoardDocument(
-                userId = uid,
+                id = id,
+                userId = defaultUserId,
                 title = title.trim().ifBlank { "Maya Document" }.take(200),
                 category = validCategory,
                 summary = summary.trim().take(600),
                 content = content.trim().ifBlank { "-" }.take(30000),
                 pinned = pinned,
-                createdAt = null,
-                updatedAt = null
+                createdAtMillis = now,
+                updatedAtMillis = now
             )
-            val addedRef = colRef.add(doc).await()
-            addedRef.id
+            dao.upsertDocument(doc)
+            id
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, colRef.path)
             throw e
         }
     }
 
     suspend fun getDocumentById(targetUserId: String, docId: String): Result<BoardDocument?> = runCatching {
-        val docRef = db.collection("users").document(targetUserId).collection("documents").document(docId)
         try {
-            docRef.get().await().toObject(BoardDocument::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            dao.getDocumentById(targetUserId.ifBlank { defaultUserId }, docId)
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.GET, docRef.path)
             throw e
         }
     }
 
     suspend fun updateDocumentPin(document: BoardDocument, pinned: Boolean): Result<Unit> = runCatching {
-        val uid = requireUserId()
         require(document.id.isNotBlank()) { "Document ID must not be blank" }
-        requireNotNull(document.createdAt) { "Document createdAt must not be null" }
-        val docRef = db.collection("users").document(uid).collection("documents").document(document.id)
         try {
-            docRef.set(document.copy(pinned = pinned, updatedAt = null)).await()
+            dao.upsertDocument(
+                document.copy(
+                    userId = document.userId.ifBlank { defaultUserId },
+                    pinned = pinned,
+                    updatedAtMillis = System.currentTimeMillis()
+                )
+            )
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             throw e
         }
     }
 
     suspend fun deleteDocument(docId: String): Result<Unit> = runCatching {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid).collection("documents").document(docId)
         try {
-            docRef.delete().await()
+            dao.deleteDocument(defaultUserId, docId)
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.DELETE, docRef.path)
             throw e
         }
     }
 
-    // --- 3. MemoryItem (/users/{userId}/memories/{memoryId}) ---
+    // --- 3. MemoryItem ---
 
-    fun observeMemories(userId: String): Flow<List<MemoryItem>> {
-        val colPath = "users/$userId/memories"
-        return db.collection("users").document(userId).collection("memories")
-            .whereEqualTo("userId", userId)
-            .snapshots()
-            .map { snapshot ->
-                snapshot.toObjects(MemoryItem::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                    .sortedByDescending { it.updatedAt ?: it.createdAt ?: Timestamp(0, 0) }
-            }
-            .catch { error ->
-                if (error is Exception) handleFirestoreError(error, OperationType.LIST, colPath)
-                throw error
-            }
+    fun observeMemories(userId: String = defaultUserId): Flow<List<MemoryItem>> {
+        return dao.observeMemories(userId.ifBlank { defaultUserId })
     }
 
     suspend fun saveMemory(kind: String, key: String, value: String): Result<String> = runCatching {
-        val uid = requireUserId()
-        val colRef = db.collection("users").document(uid).collection("memories")
         try {
+            val now = System.currentTimeMillis()
+            val id = UUID.randomUUID().toString()
             val validKind = kind.lowercase().takeIf { it in setOf("fact", "app_nickname", "episode") } ?: "fact"
             val item = MemoryItem(
-                userId = uid,
+                id = id,
+                userId = defaultUserId,
                 kind = validKind,
                 key = key.trim().ifBlank { "note" }.take(120),
                 value = value.trim().ifBlank { "-" }.take(2000),
-                createdAt = null,
-                updatedAt = null
+                createdAtMillis = now,
+                updatedAtMillis = now
             )
-            colRef.add(item).await().id
+            dao.upsertMemory(item)
+            id
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, colRef.path)
             throw e
         }
     }
 
     suspend fun deleteMemory(memoryId: String): Result<Unit> = runCatching {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid).collection("memories").document(memoryId)
         try {
-            docRef.delete().await()
+            dao.deleteMemory(defaultUserId, memoryId)
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.DELETE, docRef.path)
             throw e
         }
     }
 
-    // --- 4. SkillPlaybook (/users/{userId}/skills/{skillId}) ---
+    // --- 4. SkillPlaybook ---
 
-    fun observeSkills(userId: String): Flow<List<SkillPlaybook>> {
-        val colPath = "users/$userId/skills"
-        return db.collection("users").document(userId).collection("skills")
-            .whereEqualTo("userId", userId)
-            .snapshots()
-            .map { snapshot ->
-                snapshot.toObjects(SkillPlaybook::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                    .sortedByDescending { it.updatedAt ?: it.createdAt ?: Timestamp(0, 0) }
-            }
-            .catch { error ->
-                if (error is Exception) handleFirestoreError(error, OperationType.LIST, colPath)
-                throw error
-            }
+    fun observeSkills(userId: String = defaultUserId): Flow<List<SkillPlaybook>> {
+        return dao.observeSkills(userId.ifBlank { defaultUserId })
     }
 
     suspend fun createSkillPlaybook(
@@ -275,75 +203,55 @@ class MayaRepository(
         stepsText: String,
         enabled: Boolean = true
     ): Result<String> = runCatching {
-        val uid = requireUserId()
-        val colRef = db.collection("users").document(uid).collection("skills")
         try {
+            val now = System.currentTimeMillis()
+            val id = UUID.randomUUID().toString()
             val validKind = kind.lowercase().takeIf { it in setOf("skill", "macro", "rule") } ?: "skill"
             val playbook = SkillPlaybook(
-                userId = uid,
+                id = id,
+                userId = defaultUserId,
                 kind = validKind,
                 name = name.trim().ifBlank { "Custom Skill" }.take(100),
                 trigger = trigger.trim().ifBlank { name.trim().ifBlank { "Manual" } }.take(200),
                 stepsText = stepsText.trim().ifBlank { "1. Execute command" }.take(4000),
                 enabled = enabled,
-                createdAt = null,
-                updatedAt = null
+                createdAtMillis = now,
+                updatedAtMillis = now
             )
-            colRef.add(playbook).await().id
+            dao.upsertSkill(playbook)
+            id
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, colRef.path)
             throw e
         }
     }
 
     suspend fun toggleSkillEnabled(skill: SkillPlaybook, enabled: Boolean): Result<Unit> = runCatching {
-        val uid = requireUserId()
         require(skill.id.isNotBlank()) { "Skill ID must not be blank" }
-        requireNotNull(skill.createdAt) { "Skill createdAt must not be null" }
-        val docRef = db.collection("users").document(uid).collection("skills").document(skill.id)
         try {
-            docRef.set(skill.copy(enabled = enabled, updatedAt = null)).await()
+            dao.upsertSkill(
+                skill.copy(
+                    userId = skill.userId.ifBlank { defaultUserId },
+                    enabled = enabled,
+                    updatedAtMillis = System.currentTimeMillis()
+                )
+            )
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             throw e
         }
     }
 
     suspend fun deleteSkill(skillId: String): Result<Unit> = runCatching {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid).collection("skills").document(skillId)
         try {
-            docRef.delete().await()
+            dao.deleteSkill(defaultUserId, skillId)
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.DELETE, docRef.path)
             throw e
         }
     }
 
-    // --- 5. ReminderItem (/users/{userId}/reminders/{reminderId}) ---
+    // --- 5. ReminderItem ---
 
-    fun observeReminders(userId: String): Flow<List<ReminderItem>> {
-        val colPath = "users/$userId/reminders"
-        return db.collection("users").document(userId).collection("reminders")
-            .whereEqualTo("userId", userId)
-            .snapshots()
-            .map { snapshot ->
-                snapshot.toObjects(ReminderItem::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                    .sortedWith(
-                        compareBy<ReminderItem> { it.completed }
-                            .thenByDescending { it.updatedAt ?: it.createdAt ?: Timestamp(0, 0) }
-                    )
-            }
-            .catch { error ->
-                if (error is Exception) handleFirestoreError(error, OperationType.LIST, colPath)
-                throw error
-            }
+    fun observeReminders(userId: String = defaultUserId): Flow<List<ReminderItem>> {
+        return dao.observeReminders(userId.ifBlank { defaultUserId })
     }
 
     suspend fun createReminder(
@@ -352,54 +260,52 @@ class MayaRepository(
         detail: String,
         scheduledInfo: String
     ): Result<String> = runCatching {
-        val uid = requireUserId()
-        val colRef = db.collection("users").document(uid).collection("reminders")
         try {
+            val now = System.currentTimeMillis()
+            val id = UUID.randomUUID().toString()
             val validKind = kind.lowercase().takeIf { it in setOf("reminder", "task", "watchlist") } ?: "reminder"
             val item = ReminderItem(
-                userId = uid,
+                id = id,
+                userId = defaultUserId,
                 kind = validKind,
                 title = title.trim().ifBlank { "Reminder" }.take(200),
                 detail = detail.trim().take(500),
                 scheduledInfo = scheduledInfo.trim().take(120),
                 completed = false,
-                createdAt = null,
-                updatedAt = null
+                createdAtMillis = now,
+                updatedAtMillis = now
             )
-            colRef.add(item).await().id
+            dao.upsertReminder(item)
+            id
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, colRef.path)
             throw e
         }
     }
 
     suspend fun toggleReminderCompleted(item: ReminderItem, completed: Boolean): Result<Unit> = runCatching {
-        val uid = requireUserId()
         require(item.id.isNotBlank()) { "Reminder ID must not be blank" }
-        requireNotNull(item.createdAt) { "Reminder createdAt must not be null" }
-        val docRef = db.collection("users").document(uid).collection("reminders").document(item.id)
         try {
-            docRef.set(item.copy(completed = completed, updatedAt = null)).await()
+            dao.upsertReminder(
+                item.copy(
+                    userId = item.userId.ifBlank { defaultUserId },
+                    completed = completed,
+                    updatedAtMillis = System.currentTimeMillis()
+                )
+            )
         } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             throw e
         }
     }
 
     suspend fun deleteReminder(reminderId: String): Result<Unit> = runCatching {
-        val uid = requireUserId()
-        val docRef = db.collection("users").document(uid).collection("reminders").document(reminderId)
         try {
-            docRef.delete().await()
+            dao.deleteReminder(defaultUserId, reminderId)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.DELETE, docRef.path)
-            throw e
         }
+    }
+
+    companion object {
+        const val LOCAL_BOSS_ID = "local_boss"
     }
 }

@@ -1,9 +1,7 @@
 package com.example.data.model
 
-import com.google.firebase.Timestamp
-import com.google.firebase.firestore.DocumentId
-import com.google.firebase.firestore.IgnoreExtraProperties
-import com.google.firebase.firestore.ServerTimestamp
+import androidx.room.Entity
+import androidx.room.PrimaryKey
 
 enum class MayaPersona(
     val id: String,
@@ -43,10 +41,9 @@ enum class ListenMode(val id: String, val label: String, val sublabel: String) {
     }
 }
 
-@IgnoreExtraProperties
+@Entity(tableName = "user_profiles")
 data class UserProfile(
-    @DocumentId val id: String = "",
-    val userId: String = "",
+    @PrimaryKey val userId: String = "local_boss",
     val bossName: String = "Boss",
     val persona: String = "maya",
     val tone: String = "calm",
@@ -57,58 +54,58 @@ data class UserProfile(
     val voiceModel: String = "powerful",
     val guardArmed: Boolean = false,
     val touchGuardArmed: Boolean = false,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val createdAtMillis: Long = System.currentTimeMillis(),
+    val updatedAtMillis: Long = System.currentTimeMillis()
 )
 
-@IgnoreExtraProperties
+@Entity(tableName = "board_documents")
 data class BoardDocument(
-    @DocumentId val id: String = "",
-    val userId: String = "",
+    @PrimaryKey val id: String = "",
+    val userId: String = "local_boss",
     val title: String = "",
     val category: String = "note", // research, marketing, reviews, email, market, note, dashboard
     val summary: String = "",
     val content: String = "",
     val pinned: Boolean = false,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val createdAtMillis: Long = System.currentTimeMillis(),
+    val updatedAtMillis: Long = System.currentTimeMillis()
 )
 
-@IgnoreExtraProperties
+@Entity(tableName = "memories")
 data class MemoryItem(
-    @DocumentId val id: String = "",
-    val userId: String = "",
+    @PrimaryKey val id: String = "",
+    val userId: String = "local_boss",
     val kind: String = "fact", // fact, app_nickname, episode
     val key: String = "",
     val value: String = "",
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val createdAtMillis: Long = System.currentTimeMillis(),
+    val updatedAtMillis: Long = System.currentTimeMillis()
 )
 
-@IgnoreExtraProperties
+@Entity(tableName = "skills")
 data class SkillPlaybook(
-    @DocumentId val id: String = "",
-    val userId: String = "",
+    @PrimaryKey val id: String = "",
+    val userId: String = "local_boss",
     val kind: String = "skill", // skill, macro, rule
     val name: String = "",
     val trigger: String = "",
     val stepsText: String = "",
     val enabled: Boolean = true,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val createdAtMillis: Long = System.currentTimeMillis(),
+    val updatedAtMillis: Long = System.currentTimeMillis()
 )
 
-@IgnoreExtraProperties
+@Entity(tableName = "reminders")
 data class ReminderItem(
-    @DocumentId val id: String = "",
-    val userId: String = "",
+    @PrimaryKey val id: String = "",
+    val userId: String = "local_boss",
     val kind: String = "reminder", // reminder, task, watchlist
     val title: String = "",
     val detail: String = "",
     val scheduledInfo: String = "",
     val completed: Boolean = false,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val createdAtMillis: Long = System.currentTimeMillis(),
+    val updatedAtMillis: Long = System.currentTimeMillis()
 )
 
 sealed interface DataUiState<out T> {

@@ -14,6 +14,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.local.MayaDatabase
 import com.example.data.model.BoardDocument
 import com.example.data.model.DataUiState
 import com.example.data.model.SkillPlaybook
@@ -31,20 +32,14 @@ import com.example.ui.ImageStudioState
 import com.example.ui.MayaViewModel
 import com.example.ui.MissionState
 import com.example.ui.PendingConfirmation
-import com.example.ui.auth.AuthScreen
 import com.example.ui.components.DraggableFloatingMiniHud
 import com.example.ui.screens.AgentCockpitScreen
 import com.example.ui.screens.BoardStudioScreen
 import com.example.ui.screens.GuardianMemoryScreen
 import com.example.ui.screens.SkillsDeckScreen
 import com.example.ui.theme.MayaTheme
-import com.google.firebase.FirebaseApp
-import com.google.firebase.FirebaseOptions
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.FirebaseFirestoreSettings
-import com.google.firebase.firestore.MemoryCacheSettings
 import java.util.concurrent.atomic.AtomicBoolean
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -64,42 +59,24 @@ class MayaCriticalUserJourneyTest {
     @get:Rule
     val composeTestRule = createComposeRule()
 
-    private lateinit var firestore: FirebaseFirestore
-    private lateinit var auth: FirebaseAuth
+    private lateinit var database: MayaDatabase
 
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         context.getSharedPreferences("maya_hud_prefs", Context.MODE_PRIVATE).edit().clear().commit()
-        val databaseId = context.getString(R.string.firestore_database_id)
-        val app = if (FirebaseApp.getApps(context).isEmpty()) {
-            val newApp = FirebaseApp.initializeApp(
-                context,
-                FirebaseOptions.Builder()
-                    .setApplicationId("1:536299701809:android:5e208c8af770ef9e85f710")
-                    .setProjectId("demo-no-project")
-                    .setApiKey("fake-api-key-for-emulator")
-                    .build()
-            )
-            val fs = FirebaseFirestore.getInstance(newApp, databaseId)
-            fs.useEmulator("127.0.0.1", 8085)
-            fs.firestoreSettings = FirebaseFirestoreSettings.Builder()
-                .setLocalCacheSettings(MemoryCacheSettings.newBuilder().build())
-                .build()
-            val fa = FirebaseAuth.getInstance(newApp)
-            fa.useEmulator("127.0.0.1", 9099)
-            newApp
-        } else {
-            FirebaseApp.getInstance()
-        }
-        firestore = FirebaseFirestore.getInstance(app, databaseId)
-        auth = FirebaseAuth.getInstance(app)
+        database = MayaDatabase.createInMemory(context)
     }
 
-    private fun buildTestViewModel(uid: String = "test_boss_uid"): MayaViewModel {
+    @After
+    fun tearDown() {
+        database.close()
+    }
+
+    private fun buildTestViewModel(uid: String = MayaRepository.LOCAL_BOSS_ID): MayaViewModel {
         val context = ApplicationProvider.getApplicationContext<Context>()
         return MayaViewModel(
-            repository = MayaRepository(firestore, auth),
+            repository = MayaRepository(database.mayaDao(), uid),
             phoneExecutor = PhoneActionExecutor(context),
             voiceEngine = MayaVoiceEngine(context),
             aiBrain = MayaAiBrain(),
@@ -110,16 +87,25 @@ class MayaCriticalUserJourneyTest {
     }
 
     @Test
-    fun cuj1_authScreen_displaysHinglishGreetingAndGoogleSignInButton() {
-        composeTestRule.setContent {
-            MayaTheme {
-                AuthScreen(onAuthSuccess = {})
-            }
-        }
-        composeTestRule.waitForIdle()
+    fun cuj1_mayaRootApp_opensDirectlyIntoCockpitWithoutLoginScreen() {
+        val vm = buildTestViewModel()
 
-        composeTestRule.onNodeWithText("Namaste Boss, main Maya hoon.").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("google_sign_in_button").performScrollTo().assertIsDisplayed()
+        composeTestRule.mainClock.autoAdvance = false
+        composeTestRule.setContent {
+            MayaRootApp(viewModel = vm)
+        }
+        composeTestRule.mainClock.advanceTimeBy(150)
+
+        // Login gate is completely removed; Maya opens directly into Cockpit HUD + Bottom Tabs
+        composeTestRule.onNodeWithTag("google_sign_in_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("maya_reactive_orb").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("command_input").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maya_tab").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("board_tab").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("skills_tab").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("guardian_tab").assertIsDisplayed()
+
+        composeTestRule.mainClock.autoAdvance = true
     }
 
     @Test
@@ -239,9 +225,7 @@ class MayaCriticalUserJourneyTest {
                     memoriesState = DataUiState.Success(emptyList()),
                     remindersState = DataUiState.Success(emptyList()),
                     touchGuardAlert = vm.touchGuardAlert.value,
-                    userEmail = "boss@test.com",
-                    onBackToCockpit = {},
-                    onSignOut = {}
+                    onBackToCockpit = {}
                 )
             }
         }
@@ -481,4 +465,3 @@ class MayaCriticalUserJourneyTest {
         assertNull(vm.pendingConfirmation.value)
     }
 }
-

@@ -25,20 +25,15 @@ import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -48,29 +43,20 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.credentials.CredentialManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.core.configureAppCheck
 import com.example.data.model.DataUiState
 import com.example.data.model.MayaPersona
 import com.example.data.model.UserProfile
+import com.example.data.repository.MayaRepository
 import com.example.ui.MayaViewModel
-import com.example.ui.auth.AuthScreen
-import com.example.ui.auth.signOutUser
 import com.example.ui.components.DraggableFloatingMiniHud
 import com.example.ui.screens.AgentCockpitScreen
 import com.example.ui.screens.BoardStudioScreen
 import com.example.ui.screens.GuardianMemoryScreen
 import com.example.ui.screens.SkillsDeckScreen
 import com.example.ui.theme.MayaTheme
-import com.google.firebase.Firebase
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.FirebaseUser
-import com.google.firebase.auth.auth
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
 
 enum class AgentTab(
     val routeId: String,
@@ -85,18 +71,10 @@ enum class AgentTab(
     GUARDIAN("guardian", R.string.nav_memory, Icons.Filled.Shield, Icons.Outlined.Shield, "guardian_tab")
 }
 
-internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
-    val listener = FirebaseAuth.AuthStateListener { auth ->
-        trySend(auth.currentUser)
-    }
-    addAuthStateListener(listener)
-    awaitClose { removeAuthStateListener(listener) }
-}
-
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // STEP 1 (MANDATORY): Configure App Check with launch intent before any UI or Firebase calls
+        // STEP 1 (MANDATORY): Configure App Check with launch intent before any UI or Firebase AI calls
         configureAppCheck(this, intent)
         enableEdgeToEdge()
 
@@ -107,47 +85,18 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MayaRootApp(auth: FirebaseAuth = Firebase.auth) {
-    var currentUser by remember { mutableStateOf(auth.currentUser) }
-
-    DisposableEffect(auth) {
-        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
-            currentUser = firebaseAuth.currentUser
-        }
-        auth.addAuthStateListener(listener)
-        onDispose {
-            auth.removeAuthStateListener(listener)
-        }
-    }
-
-    val user = currentUser
-
-    if (user == null) {
-        MayaTheme(persona = MayaPersona.MAYA, darkTheme = true) {
-            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                AuthScreen(
-                    onAuthSuccess = {
-                        currentUser = auth.currentUser
-                    }
-                )
-            }
-        }
-    } else {
-        AuthenticatedMayaShell(user = user)
-    }
+fun MayaRootApp(
+    viewModel: MayaViewModel = viewModel(
+        key = MayaRepository.LOCAL_BOSS_ID,
+        factory = MayaViewModel.provideFactory(MayaRepository.LOCAL_BOSS_ID, "Boss")
+    )
+) {
+    MayaAppShell(viewModel = viewModel)
 }
 
 @Composable
-private fun AuthenticatedMayaShell(user: FirebaseUser) {
+private fun MayaAppShell(viewModel: MayaViewModel) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val credentialManager = remember(context) { CredentialManager.create(context) }
-
-    val displayName = user.displayName?.substringBefore(" ")?.takeIf { it.isNotBlank() } ?: "Boss"
-    val viewModel: MayaViewModel = viewModel(
-        key = user.uid,
-        factory = MayaViewModel.provideFactory(user.uid, displayName)
-    )
 
     val profileState by viewModel.profileState.collectAsStateWithLifecycle()
     val documentsState by viewModel.documentsState.collectAsStateWithLifecycle()
@@ -181,7 +130,7 @@ private fun AuthenticatedMayaShell(user: FirebaseUser) {
     }
 
     val profile = (profileState as? DataUiState.Success)?.data
-        ?: UserProfile(userId = user.uid, bossName = displayName)
+        ?: UserProfile(userId = MayaRepository.LOCAL_BOSS_ID, bossName = "Boss")
     val activePersona = MayaPersona.fromId(profile.persona)
 
     var currentTab by rememberSaveable { mutableStateOf(AgentTab.MAYA) }
@@ -289,15 +238,7 @@ private fun AuthenticatedMayaShell(user: FirebaseUser) {
                                 memoriesState = memoriesState,
                                 remindersState = remindersState,
                                 touchGuardAlert = touchGuardAlert,
-                                userEmail = user.email,
-                                onBackToCockpit = { currentTab = AgentTab.MAYA },
-                                onSignOut = {
-                                    signOutUser(
-                                        credentialManager = credentialManager,
-                                        onSignOutComplete = { currentTab = AgentTab.MAYA },
-                                        scope = scope
-                                    )
-                                }
+                                onBackToCockpit = { currentTab = AgentTab.MAYA }
                             )
                         }
 

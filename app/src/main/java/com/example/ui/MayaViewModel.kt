@@ -7,7 +7,6 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.example.R
 import com.example.data.model.BoardDocument
 import com.example.data.model.DataUiState
 import com.example.data.model.ListenMode
@@ -32,7 +31,6 @@ import com.example.domain.MayaVoiceEngine
 import com.example.domain.PhoneActionExecutor
 import com.example.domain.SystemHudMonitor
 import com.example.domain.SystemHudSnapshot
-import com.google.firebase.firestore.FirebaseFirestore
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -1422,16 +1420,17 @@ class MayaViewModel(
     }
 
     companion object {
-        fun provideFactory(currentUserId: String, displayName: String): ViewModelProvider.Factory =
+        fun provideFactory(
+            currentUserId: String = MayaRepository.LOCAL_BOSS_ID,
+            displayName: String = "Boss"
+        ): ViewModelProvider.Factory =
             viewModelFactory {
                 initializer {
                     val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]) {
                         "APPLICATION_KEY missing from CreationExtras"
                     }
-                    val databaseId = app.getString(R.string.firestore_database_id)
-                    val db = FirebaseFirestore.getInstance(databaseId)
                     MayaViewModel(
-                        repository = MayaRepository(db),
+                        repository = MayaRepository(app, currentUserId),
                         phoneExecutor = PhoneActionExecutor(app),
                         voiceEngine = MayaVoiceEngine(app),
                         aiBrain = MayaAiBrain(),
