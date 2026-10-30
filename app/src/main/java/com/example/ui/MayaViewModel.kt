@@ -21,6 +21,8 @@ import com.example.data.repository.MayaRepository
 import com.example.domain.AgentDecision
 import com.example.domain.DeviceTelemetry
 import com.example.domain.LiveInfoClient
+import com.example.domain.LiveInfoResult
+import com.example.domain.MayaAccessibilityService
 import com.example.domain.MayaAiBrain
 import com.example.domain.MayaVoiceEngine
 import com.example.domain.PhoneActionExecutor
@@ -28,6 +30,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -141,7 +144,7 @@ class MayaViewModel(
         listOf(
             ChatBubble(
                 isFromBoss = false,
-                text = "Haan $initialDisplayName, Maya ready hai. Boliye kya kaam niptayein — torch, alarm, WhatsApp, live weather, market snapshot, ya koi research Board pe rakhun?",
+                text = "Haan $initialDisplayName, Maya ready hai. Boliye kya kaam niptayein — torch, alarm, WhatsApp/Telegram, stocks, GitHub check, ya koi research Board pe rakhun?",
                 badge = "Maya • Ready"
             )
         )
@@ -176,6 +179,7 @@ class MayaViewModel(
     val isSpeaking: StateFlow<Boolean> = voiceEngine.isSpeaking
     val partialTranscript: StateFlow<String> = voiceEngine.partialTranscript
     val wakeWordEnabled: StateFlow<Boolean> = voiceEngine.wakeWordModeEnabled
+    val autopilotConnected: StateFlow<Boolean> = MayaAccessibilityService.isConnected
 
     init {
         viewModelScope.launch {
@@ -191,6 +195,11 @@ class MayaViewModel(
 
     fun refreshTelemetry() {
         _telemetry.value = phoneExecutor.readTelemetry()
+    }
+
+    fun openAccessibilityAutopilotSettings() {
+        val outcome = phoneExecutor.openAccessibilitySettings()
+        appendMayaBubble(outcome.messageHinglish, badge = "Autopilot Settings")
     }
 
     fun toggleVoiceReply() {
@@ -213,9 +222,7 @@ class MayaViewModel(
 
     fun startVoiceInput() {
         voiceEngine.startListening(
-            onResult = { spokenText ->
-                handleVoiceTranscript(spokenText)
-            },
+            onResult = { spokenText -> handleVoiceTranscript(spokenText) },
             onError = { errMsg ->
                 appendMayaBubble(errMsg, badge = "Mic", isError = false, speakOut = false)
             }
@@ -228,7 +235,6 @@ class MayaViewModel(
 
     private fun handleVoiceTranscript(transcript: String) {
         val prof = currentProfile()
-        // ListenMode == BOSS_ONLY + Voice Guardian enrolled passphrase check if Guard Armed
         if (prof.listenMode == ListenMode.BOSS_ONLY.id && prof.guardArmed && prof.voiceEnrolled && prof.voicePassphrase.isNotBlank()) {
             val expected = prof.voicePassphrase.lowercase(Locale.ROOT)
             if (!transcript.lowercase(Locale.ROOT).contains(expected) &&
@@ -247,22 +253,33 @@ class MayaViewModel(
         if (trimmed.isBlank()) return
 
         _messages.value = _messages.value + ChatBubble(isFromBoss = true, text = trimmed)
+        val lowerCmd = trimmed.lowercase(Locale.ROOT)
 
-        // Check if Boss is answering "haan" / "no" to a PendingConfirmation (Golden Rule 5)
+        // 1. Check if Boss is answering "haan" / "no" to a PendingConfirmation (Golden Rule 5)
         val pending = _pendingConfirmation.value
         if (pending != null) {
-            val lower = trimmed.lowercase(Locale.ROOT)
-            if (lower in setOf("haan", "ha", "yes", "kar do", "bhej do", "bhej de", "save kar do", "delete kar do", "ok", "confirm")) {
+            if (lowerCmd in setOf("haan", "ha", "yes", "kar do", "bhej do", "bhej de", "save kar do", "delete kar do", "ok", "confirm", "haan kar do")) {
                 confirmPendingAction()
                 return
-            } else if (lower in setOf("nahi", "na", "no", "cancel", "rehne do", "mat bhejo", "ruko")) {
+            } else if (lowerCmd in setOf("nahi", "na", "no", "cancel", "rehne do", "mat bhejo", "ruko", "mat karo")) {
                 cancelPendingAction()
                 return
             }
         }
 
-        // Quick voice/text listen mode or persona shortcuts
-        val lowerCmd = trimmed.lowercase(Locale.ROOT)
+        // 2. Mission Undo / Cancel voice & text shortcuts (Golden Rule 4)
+        if (_activeMission.value != null) {
+            if (lowerCmd in setOf("undo", "undo step", "undo last step", "pichhla step wapas")) {
+                undoLastMissionStep()
+                return
+            }
+            if (lowerCmd in setOf("cancel mission", "mission roko", "mission band karo")) {
+                cancelMission()
+                return
+            }
+        }
+
+        // 3. Listen mode shortcuts (Section 1)
         if (lowerCmd.contains("sirf meri suno")) {
             setListenMode(ListenMode.BOSS_ONLY)
             appendMayaBubble("Done ${currentProfile().bossName}, ab sirf aapki awaaz sunungi.", badge = "Listen: Boss Only")
@@ -297,14 +314,13 @@ class MayaViewModel(
                 memories = memories,
                 skills = skills,
                 telemetry = _telemetry.value,
+                autopilotConnected = autopilotConnected.value,
                 recentTranscript = recent
             )
 
             _isThinking.value = false
             decisionRes.fold(
-                onSuccess = { decision ->
-                    executeAgentDecision(decision, memories)
-                },
+                onSuccess = { decision -> executeAgentDecision(decision, memories) },
                 onFailure = { err ->
                     appendMayaBubble(
                         err.localizedMessage ?: "AI call fail hua, Boss.",
@@ -317,7 +333,6 @@ class MayaViewModel(
     }
 
     private suspend fun executeAgentDecision(decision: AgentDecision, memories: List<MemoryItem>) {
-        // Save Board document automatically if long content was generated (Golden Rule 6)
         var savedBoardTitle: String? = null
         if (decision.boardContent.isNotBlank() && decision.actionType != "SEND_EMAIL") {
             val title = decision.boardTitle.ifBlank { "Maya Board Report" }
@@ -335,6 +350,89 @@ class MayaViewModel(
             .associate { it.key to it.value }
 
         when (decision.actionType) {
+            // --- Section 3.1 Accessibility & Screen Autopilot ---
+            "SCREEN_TAP_TEXT" -> {
+                val svc = MayaAccessibilityService.instance
+                if (svc == null) {
+                    phoneExecutor.openAccessibilitySettings()
+                    appendMayaBubble("Boss, screen pe button tap karne ke liye Accessibility me 'Maya' on kar dijiye — settings khol di hain.", badge = "Enable Autopilot")
+                } else {
+                    val res = svc.tapText(decision.target.ifBlank { decision.messageBody })
+                    appendMayaBubble(res.messageHinglish, badge = "Autopilot Tap")
+                }
+            }
+
+            "SCREEN_TYPE_TEXT" -> {
+                val svc = MayaAccessibilityService.instance
+                if (svc == null) {
+                    phoneExecutor.openAccessibilitySettings()
+                    appendMayaBubble("Boss, screen pe type karne ke liye Accessibility me 'Maya' on kar dijiye.", badge = "Enable Autopilot")
+                } else {
+                    val res = svc.typeTextIntoFocusedField(decision.messageBody.ifBlank { decision.target })
+                    appendMayaBubble(res.messageHinglish, badge = "Autopilot Type")
+                }
+            }
+
+            "SCREEN_SCROLL" -> {
+                val svc = MayaAccessibilityService.instance
+                if (svc == null) {
+                    phoneExecutor.openAccessibilitySettings()
+                    appendMayaBubble("Boss, scroll karne ke liye Accessibility me 'Maya' on kar dijiye.", badge = "Enable Autopilot")
+                } else {
+                    val res = svc.scrollOrSwipe(decision.target.ifBlank { "down" })
+                    appendMayaBubble(res.messageHinglish, badge = "Autopilot Scroll")
+                }
+            }
+
+            "SCREEN_READ" -> {
+                val svc = MayaAccessibilityService.instance
+                if (svc == null) {
+                    phoneExecutor.openAccessibilitySettings()
+                    appendMayaBubble("Boss, screen text padhne ke liye Accessibility me 'Maya' on kar dijiye.", badge = "Enable Autopilot")
+                } else {
+                    val (ok, visible) = svc.readVisibleScreenText()
+                    if (ok) {
+                        val docTitle = "Screen Snapshot"
+                        repository.createDocument(docTitle, "note", visible.take(200), "# Screen Text\n\n$visible")
+                        appendMayaBubble("Screen pe dikh raha hai: ${visible.take(180)}.", badge = "Screen Read", linkedBoardTitle = docTitle)
+                    } else {
+                        appendMayaBubble(visible, badge = "Screen Read")
+                    }
+                }
+            }
+
+            "WAIT_FOR_TEXT" -> {
+                val svc = MayaAccessibilityService.instance
+                if (svc == null) {
+                    phoneExecutor.openAccessibilitySettings()
+                    appendMayaBubble("Boss, wait_for_screen_text ke liye Accessibility me 'Maya' on chahiye.", badge = "Enable Autopilot")
+                } else {
+                    val secs = decision.numberVal.coerceIn(3, 120)
+                    appendMayaBubble("'${decision.target}' aane ka wait kar rahi hoon (max ${secs}s)…", badge = "Waiting")
+                    val res = svc.waitForScreenText(decision.target, shouldAppear = true, timeoutSeconds = secs)
+                    appendMayaBubble(res.messageHinglish, badge = "Wait Complete")
+                }
+            }
+
+            "GLOBAL_NAV" -> {
+                val svc = MayaAccessibilityService.instance
+                if (svc == null) {
+                    phoneExecutor.openAccessibilitySettings()
+                    appendMayaBubble("Boss, Home/Back/Recents autopilot ke liye Accessibility me 'Maya' on kar dijiye.", badge = "Enable Autopilot")
+                } else {
+                    val res = svc.performGlobalNav(decision.target.ifBlank { "back" })
+                    appendMayaBubble(res.messageHinglish, badge = "Navigation")
+                }
+            }
+
+            "WAIT_DELAY" -> {
+                val secs = decision.numberVal.coerceIn(1, 120) // Golden Rule 10: max 120s
+                appendMayaBubble("${secs}s ruk rahi hoon, Boss…", badge = "Timer Wait")
+                delay(secs * 1000L)
+                appendMayaBubble("${secs}s ka wait poora ho gaya, Boss.", badge = "Wait Done")
+            }
+
+            // --- Section 3.1 & 3.2 Hardware, Settings & OS ---
             "SET_TORCH_ON" -> {
                 val res = phoneExecutor.setTorch(true)
                 refreshTelemetry()
@@ -380,9 +478,44 @@ class MayaViewModel(
                 appendMayaBubble(res.messageHinglish, badge = "Open App")
             }
 
+            "LIST_APPS" -> {
+                val res = phoneExecutor.listInstalledApps(decision.target)
+                appendMayaBubble(res.messageHinglish, badge = "Installed Apps")
+            }
+
             "OPEN_URL" -> {
                 val res = phoneExecutor.openUrl(decision.target)
                 appendMayaBubble(res.messageHinglish, badge = "Browser")
+            }
+
+            "GET_TIME" -> {
+                val txt = phoneExecutor.getCurrentTimeText(decision.target.takeIf { it.isNotBlank() })
+                appendMayaBubble(txt, badge = "Time")
+            }
+
+            "SHOW_ALARMS" -> {
+                val res = phoneExecutor.showAlarms()
+                appendMayaBubble(res.messageHinglish, badge = "Alarms")
+            }
+
+            "READ_CLIPBOARD" -> {
+                val clip = phoneExecutor.readClipboard()
+                val msg = if (clip.isBlank()) "Clipboard abhi khaali hai, Boss." else "Clipboard me likha hai: \"${clip.take(200)}\""
+                appendMayaBubble(msg, badge = "Clipboard")
+            }
+
+            "WRITE_CLIPBOARD" -> {
+                val text = decision.messageBody.ifBlank { decision.target }
+                val res = phoneExecutor.writeClipboard("Maya", text)
+                appendMayaBubble(res.messageHinglish, badge = "Clipboard")
+            }
+
+            "SHARE_TEXT" -> {
+                val res = phoneExecutor.shareText(
+                    decision.subject.ifBlank { "Maya Share" },
+                    decision.messageBody.ifBlank { decision.spokenReply }
+                )
+                appendMayaBubble(res.messageHinglish, badge = "Share")
             }
 
             "SET_ALARM" -> {
@@ -407,7 +540,7 @@ class MayaViewModel(
                 appendMayaBubble(res.messageHinglish, badge = "Calendar")
             }
 
-            // GOLDEN RULE 5: Risky actions ALWAYS gate behind confirmed=true!
+            // --- Section 3.3 Comms + Golden Rule 5 Confirmation Gate ---
             "SEND_WHATSAPP" -> {
                 val who = decision.recipient.ifBlank { decision.phone.ifBlank { "Contact" } }
                 val msg = decision.messageBody.ifBlank { decision.target }
@@ -416,9 +549,20 @@ class MayaViewModel(
                     title = "WhatsApp Message Confirm Karein",
                     previewDetails = "To: $who ${if (decision.phone.isNotBlank()) "(${decision.phone})" else ""}\nMessage: \"$msg\"",
                     promptSpoken = ask,
-                    onConfirmExecute = {
-                        phoneExecutor.sendWhatsApp(decision.phone, msg).messageHinglish
-                    }
+                    onConfirmExecute = { phoneExecutor.sendWhatsApp(decision.phone, msg).messageHinglish }
+                )
+                appendMayaBubble(ask, badge = "Confirm Required")
+            }
+
+            "SEND_TELEGRAM" -> {
+                val who = decision.recipient.ifBlank { decision.phone.ifBlank { "Telegram" } }
+                val msg = decision.messageBody.ifBlank { decision.target }
+                val ask = "Boss, $who ko Telegram pe '$msg' bhej dun?"
+                _pendingConfirmation.value = PendingConfirmation(
+                    title = "Telegram Message Confirm Karein",
+                    previewDetails = "To: $who\nTelegram: \"$msg\"",
+                    promptSpoken = ask,
+                    onConfirmExecute = { phoneExecutor.sendTelegram(who, msg).messageHinglish }
                 )
                 appendMayaBubble(ask, badge = "Confirm Required")
             }
@@ -431,9 +575,7 @@ class MayaViewModel(
                     title = "SMS Confirm Karein",
                     previewDetails = "To: $who\nSMS: \"$msg\"",
                     promptSpoken = ask,
-                    onConfirmExecute = {
-                        phoneExecutor.sendSms(decision.phone, msg).messageHinglish
-                    }
+                    onConfirmExecute = { phoneExecutor.sendSms(decision.phone, msg).messageHinglish }
                 )
                 appendMayaBubble(ask, badge = "Confirm Required")
             }
@@ -442,7 +584,6 @@ class MayaViewModel(
                 val to = decision.recipient
                 val subj = decision.subject.ifBlank { "Update" }
                 val body = decision.messageBody.ifBlank { decision.boardContent }
-                // Save single clean email draft on Maya Board first (Golden Rule 6 + Section 5)
                 repository.createDocument(
                     title = "Email Draft: $subj",
                     category = "email",
@@ -454,9 +595,7 @@ class MayaViewModel(
                     title = "Email Send Confirm Karein",
                     previewDetails = "To: ${to.ifBlank { "(select in mail app)" }}\nSubject: $subj\n\n$body",
                     promptSpoken = ask,
-                    onConfirmExecute = {
-                        phoneExecutor.sendEmail(to, subj, body).messageHinglish
-                    }
+                    onConfirmExecute = { phoneExecutor.sendEmail(to, subj, body).messageHinglish }
                 )
                 appendMayaBubble(ask, badge = "Confirm Email", linkedBoardTitle = "Email Draft: $subj")
             }
@@ -464,6 +603,12 @@ class MayaViewModel(
             "DIAL_CALL" -> {
                 val res = phoneExecutor.dialCall(decision.phone.ifBlank { decision.target })
                 appendMayaBubble(res.messageHinglish, badge = "Call")
+            }
+
+            "SAVE_CONTACT" -> {
+                val name = decision.recipient.ifBlank { decision.target }
+                val res = phoneExecutor.saveContactIntent(name, decision.phone, decision.subject)
+                appendMayaBubble(res.messageHinglish, badge = "Contacts")
             }
 
             "PLAY_YOUTUBE" -> {
@@ -481,40 +626,92 @@ class MayaViewModel(
                 appendMayaBubble(res.messageHinglish, badge = "Maps")
             }
 
+            // --- Section 3.6, 3.7, 3.10 Live Web, URL Reader, Markets & GitHub ---
+            "SEARCH_WEB" -> {
+                saveAndSpeakLiveInfo(
+                    liveInfoClient.searchWebLive(decision.target.ifBlank { decision.messageBody }),
+                    "Web Search"
+                )
+            }
+
+            "READ_URL" -> {
+                val rawUrl = decision.target.ifBlank { decision.messageBody }
+                val pageRes = liveInfoClient.fetchUrlCleanText(rawUrl)
+                pageRes.fold(
+                    onSuccess = { (pageTitle, cleanBody) ->
+                        val sumRes = aiBrain.summarizeUntrustedWebPage(pageTitle, cleanBody, currentProfile().bossName)
+                        sumRes.fold(
+                            onSuccess = { (spoken, md) ->
+                                val title = "URL Summary: ${pageTitle.take(80)}"
+                                repository.createDocument(title, "research", spoken, md)
+                                appendMayaBubble(spoken, badge = "Page Read", linkedBoardTitle = title)
+                            },
+                            onFailure = { e ->
+                                appendMayaBubble(e.localizedMessage ?: "URL summarize nahi ho saka, Boss.", badge = "URL Error", isError = true)
+                            }
+                        )
+                    },
+                    onFailure = {
+                        appendMayaBubble("Boss, wo webpage abhi khul ya padha nahi ja saka.", badge = "URL Error", isError = true)
+                    }
+                )
+            }
+
             "GET_WEATHER" -> {
-                val info = liveInfoClient.fetchWeather(decision.target.ifBlank { "Delhi" })
-                if (info.success && info.boardMarkdown != null && info.boardTitle != null) {
-                    repository.createDocument(info.boardTitle, info.boardCategory ?: "note", info.spokenSummary, info.boardMarkdown)
-                }
-                appendMayaBubble(info.spokenSummary, badge = "Live Weather", linkedBoardTitle = info.boardTitle)
+                saveAndSpeakLiveInfo(liveInfoClient.fetchWeather(decision.target.ifBlank { "Delhi" }), "Live Weather")
+            }
+
+            "GET_STOCK" -> {
+                saveAndSpeakLiveInfo(liveInfoClient.fetchStockQuote(decision.target.ifBlank { "RELIANCE.NS" }), "Stocks")
             }
 
             "GET_CRYPTO" -> {
-                val info = liveInfoClient.fetchCryptoPrice(decision.target.ifBlank { "bitcoin" })
-                if (info.success && info.boardMarkdown != null && info.boardTitle != null) {
-                    repository.createDocument(info.boardTitle, "market", info.spokenSummary, info.boardMarkdown)
-                }
-                appendMayaBubble(info.spokenSummary, badge = "Markets", linkedBoardTitle = info.boardTitle)
+                saveAndSpeakLiveInfo(liveInfoClient.fetchCryptoPrice(decision.target.ifBlank { "bitcoin" }), "Crypto")
             }
 
             "GET_FOREX" -> {
                 val from = decision.target.ifBlank { "USD" }
                 val to = decision.phone.ifBlank { "INR" }
-                val info = liveInfoClient.fetchForexRate(from, to)
-                if (info.success && info.boardMarkdown != null && info.boardTitle != null) {
-                    repository.createDocument(info.boardTitle, "market", info.spokenSummary, info.boardMarkdown)
-                }
-                appendMayaBubble(info.spokenSummary, badge = "Forex", linkedBoardTitle = info.boardTitle)
+                saveAndSpeakLiveInfo(liveInfoClient.fetchForexRate(from, to), "Forex")
             }
 
             "GET_NEWS" -> {
-                val info = liveInfoClient.fetchFreshNews()
-                if (info.success && info.boardMarkdown != null && info.boardTitle != null) {
-                    repository.createDocument(info.boardTitle, "research", info.spokenSummary, info.boardMarkdown)
-                }
-                appendMayaBubble(info.spokenSummary, badge = "Fresh News", linkedBoardTitle = info.boardTitle)
+                saveAndSpeakLiveInfo(liveInfoClient.fetchFreshNews(), "Fresh News")
             }
 
+            "GITHUB_LOOKUP" -> {
+                saveAndSpeakLiveInfo(
+                    liveInfoClient.fetchGitHubInfo(decision.target.ifBlank { decision.messageBody }),
+                    "GitHub"
+                )
+            }
+
+            "SCAN_WATCHLIST" -> {
+                val watchItems = (remindersState.value as? DataUiState.Success)?.data
+                    .orEmpty()
+                    .filter { it.kind == "watchlist" }
+                    .take(4)
+                if (watchItems.isEmpty()) {
+                    appendMayaBubble("Boss, aapki market watchlist abhi khaali hai. Pehle koi stock ya coin add karein?", badge = "Watchlist")
+                } else {
+                    val lines = mutableListOf<String>()
+                    for (item in watchItems) {
+                        val stockRes = liveInfoClient.fetchStockQuote(item.title)
+                        if (stockRes.success) {
+                            lines.add("- **${item.title}:** ${stockRes.spokenSummary}")
+                        } else {
+                            val cryptoRes = liveInfoClient.fetchCryptoPrice(item.title)
+                            lines.add("- **${item.title}:** ${cryptoRes.spokenSummary}")
+                        }
+                    }
+                    val docTitle = "Watchlist Market Scan"
+                    val md = "# Watchlist Live Scan\n\n" + lines.joinToString("\n") + "\n\n_Sirf live data, koi buy/sell salah nahi._"
+                    repository.createDocument(docTitle, "market", "Watchlist (${watchItems.size} items) scan ready.", md)
+                    appendMayaBubble("Watchlist ke ${watchItems.size} tickers scan karke Board pe rakh diye hain, Boss.", badge = "Watchlist Scan", linkedBoardTitle = docTitle)
+                }
+            }
+
+            // --- Memory, Board, Skills, Personas & Security ---
             "REMEMBER_FACT" -> {
                 val key = decision.subject.ifBlank { decision.target.ifBlank { "Boss Preference" } }
                 val value = decision.messageBody.ifBlank { decision.spokenReply }
@@ -554,7 +751,20 @@ class MayaViewModel(
                 appendMayaBubble(decision.spokenReply, badge = "Saved to Board", linkedBoardTitle = title)
             }
 
-            // Section 4 Skill Creation Rule: Preview playbook & ask "Save kar doon?" first!
+            "DELETE_BOARD_DOC" -> {
+                val docs = (documentsState.value as? DataUiState.Success)?.data.orEmpty()
+                val query = decision.target.trim()
+                val match = if (query.isNotBlank()) {
+                    docs.firstOrNull { it.title.contains(query, ignoreCase = true) }
+                } else docs.firstOrNull()
+
+                if (match == null) {
+                    appendMayaBubble("Boss, Board pe '$query' naam ka koi document nahi mila.", badge = "Board")
+                } else {
+                    requestDeleteBoardDoc(match)
+                }
+            }
+
             "CREATE_SKILL_PREVIEW" -> {
                 val name = decision.target.ifBlank { "Custom Playbook" }
                 val trigger = decision.subject.ifBlank { name }
@@ -572,6 +782,16 @@ class MayaViewModel(
                 appendMayaBubble(ask, badge = "Skill Preview")
             }
 
+            "DELETE_SKILL" -> {
+                val list = (skillsState.value as? DataUiState.Success)?.data.orEmpty()
+                val match = list.firstOrNull { it.name.contains(decision.target.trim(), ignoreCase = true) }
+                if (match == null) {
+                    appendMayaBubble("Boss, '${decision.target}' naam ki koi saved skill nahi mili.", badge = "Skills")
+                } else {
+                    requestDeleteSkill(match)
+                }
+            }
+
             "SWITCH_PERSONA" -> {
                 val newPersona = MayaPersona.fromId(decision.target)
                 switchPersona(newPersona)
@@ -582,6 +802,34 @@ class MayaViewModel(
                 val mode = ListenMode.fromId(decision.target)
                 setListenMode(mode)
                 appendMayaBubble(decision.spokenReply, badge = mode.label)
+            }
+
+            "ARM_GUARD" -> {
+                if (decision.target.contains("touch", ignoreCase = true)) {
+                    setTouchGuard(true)
+                    appendMayaBubble("Touch Guard chalu kar diya hai, Boss.", badge = "Touch Guard Armed")
+                } else {
+                    setAwayGuard(true)
+                    appendMayaBubble("Away Voice Guard chalu kar diya hai, Boss.", badge = "Voice Guard Armed")
+                }
+            }
+
+            "DISARM_GUARD" -> {
+                setTouchGuard(false)
+                setAwayGuard(false)
+                appendMayaBubble("Security guards band kar diye hain, Boss.", badge = "Guard Off")
+            }
+
+            "TRIGGER_SOS" -> {
+                val sosNum = decision.phone.ifBlank { "112" }
+                val ask = "Boss, Emergency SOS dialer ($sosNum) abhi khol dun?"
+                _pendingConfirmation.value = PendingConfirmation(
+                    title = "Emergency SOS Confirm Karein",
+                    previewDetails = "Emergency Number: $sosNum",
+                    promptSpoken = ask,
+                    onConfirmExecute = { phoneExecutor.dialCall(sosNum).messageHinglish }
+                )
+                appendMayaBubble(ask, badge = "SOS Confirm")
             }
 
             "GENERATE_IMAGE" -> {
@@ -610,6 +858,18 @@ class MayaViewModel(
                 )
             }
         }
+    }
+
+    private suspend fun saveAndSpeakLiveInfo(info: LiveInfoResult, badge: String) {
+        if (info.success && info.boardMarkdown != null && info.boardTitle != null) {
+            repository.createDocument(
+                info.boardTitle,
+                info.boardCategory ?: "research",
+                info.spokenSummary,
+                info.boardMarkdown
+            )
+        }
+        appendMayaBubble(info.spokenSummary, badge = badge, linkedBoardTitle = info.boardTitle)
     }
 
     fun confirmPendingAction() {
@@ -753,24 +1013,16 @@ class MayaViewModel(
         }
     }
 
-    // --- Quick Direct Actions & Profile Mutations ---
-
     fun switchPersona(persona: MayaPersona) {
-        viewModelScope.launch {
-            repository.updateProfileFields(mapOf("persona" to persona.id))
-        }
+        viewModelScope.launch { repository.updateProfileFields(mapOf("persona" to persona.id)) }
     }
 
     fun switchTone(tone: MayaTone) {
-        viewModelScope.launch {
-            repository.updateProfileFields(mapOf("tone" to tone.id))
-        }
+        viewModelScope.launch { repository.updateProfileFields(mapOf("tone" to tone.id)) }
     }
 
     fun setListenMode(mode: ListenMode) {
-        viewModelScope.launch {
-            repository.updateProfileFields(mapOf("listenMode" to mode.id))
-        }
+        viewModelScope.launch { repository.updateProfileFields(mapOf("listenMode" to mode.id)) }
     }
 
     fun saveBossProfileAndWiki(bossName: String, wiki: String) {
@@ -800,21 +1052,14 @@ class MayaViewModel(
     }
 
     fun setAwayGuard(armed: Boolean) {
-        viewModelScope.launch {
-            repository.updateProfileFields(mapOf("guardArmed" to armed))
-        }
+        viewModelScope.launch { repository.updateProfileFields(mapOf("guardArmed" to armed)) }
     }
 
     fun setTouchGuard(armed: Boolean) {
         _touchGuardAlert.value = null
-        viewModelScope.launch {
-            repository.updateProfileFields(mapOf("touchGuardArmed" to armed))
-        }
+        viewModelScope.launch { repository.updateProfileFields(mapOf("touchGuardArmed" to armed)) }
     }
 
-    /**
-     * Section 3.13 Touch Guard Rule: Immediately alert Boss what happened, run NO tools, ask whether to disarm or keep active.
-     */
     fun onTouchGuardTriggered() {
         val alert = "Boss, abhi screen pe unauthorized touch detect hua! Maine koi action nahi chalaya. Touch guard band karun ya chalu rehne dun?"
         _touchGuardAlert.value = alert
@@ -830,31 +1075,20 @@ class MayaViewModel(
 
     fun addManualBoardNote(title: String, category: String, content: String) {
         viewModelScope.launch {
-            repository.createDocument(
-                title = title,
-                category = category,
-                summary = content.take(160),
-                content = content
-            )
+            repository.createDocument(title = title, category = category, summary = content.take(160), content = content)
         }
     }
 
     fun togglePinDocument(doc: BoardDocument) {
-        viewModelScope.launch {
-            repository.updateDocumentPin(doc, !doc.pinned)
-        }
+        viewModelScope.launch { repository.updateDocumentPin(doc, !doc.pinned) }
     }
 
     fun addMemoryManual(kind: String, key: String, value: String) {
-        viewModelScope.launch {
-            repository.saveMemory(kind, key, value)
-        }
+        viewModelScope.launch { repository.saveMemory(kind, key, value) }
     }
 
     fun deleteMemory(id: String) {
-        viewModelScope.launch {
-            repository.deleteMemory(id)
-        }
+        viewModelScope.launch { repository.deleteMemory(id) }
     }
 
     fun previewAndConfirmSkill(kind: String, name: String, trigger: String, steps: String) {
@@ -871,9 +1105,7 @@ class MayaViewModel(
     }
 
     fun toggleSkill(skill: SkillPlaybook) {
-        viewModelScope.launch {
-            repository.toggleSkillEnabled(skill, !skill.enabled)
-        }
+        viewModelScope.launch { repository.toggleSkillEnabled(skill, !skill.enabled) }
     }
 
     fun requestDeleteSkill(skill: SkillPlaybook) {
@@ -890,21 +1122,15 @@ class MayaViewModel(
     }
 
     fun addReminderManual(kind: String, title: String, detail: String, scheduled: String) {
-        viewModelScope.launch {
-            repository.createReminder(kind, title, detail, scheduled)
-        }
+        viewModelScope.launch { repository.createReminder(kind, title, detail, scheduled) }
     }
 
     fun toggleReminder(item: ReminderItem) {
-        viewModelScope.launch {
-            repository.toggleReminderCompleted(item, !item.completed)
-        }
+        viewModelScope.launch { repository.toggleReminderCompleted(item, !item.completed) }
     }
 
     fun deleteReminder(id: String) {
-        viewModelScope.launch {
-            repository.deleteReminder(id)
-        }
+        viewModelScope.launch { repository.deleteReminder(id) }
     }
 
     private fun appendMayaBubble(

@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.AlarmClock
 import android.provider.CalendarContract
+import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.provider.Settings
 import android.view.KeyEvent
@@ -162,16 +163,64 @@ class PhoneActionExecutor(private val context: Context) {
     }
 
     fun openSettingsPanel(panel: String): ActionOutcome {
-        val action = when (panel.lowercase(Locale.ROOT)) {
+        val lower = panel.lowercase(Locale.ROOT)
+        if (lower == "notification" || lower == "notifications") {
+            val notifIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, appContext.packageName)
+            }
+            return launchSafeIntent(notifIntent, "Notification settings khol di, Boss.")
+        }
+        val action = when (lower) {
             "wifi", "wi-fi" -> Settings.ACTION_WIFI_SETTINGS
             "bluetooth", "bt" -> Settings.ACTION_BLUETOOTH_SETTINGS
             "sound", "volume" -> Settings.ACTION_SOUND_SETTINGS
             "display", "brightness" -> Settings.ACTION_DISPLAY_SETTINGS
             "airplane", "network", "hotspot" -> Settings.ACTION_WIRELESS_SETTINGS
             "battery" -> Intent.ACTION_POWER_USAGE_SUMMARY
+            "accessibility", "autopilot" -> Settings.ACTION_ACCESSIBILITY_SETTINGS
+            "location", "gps" -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
+            "dnd" -> Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS
+            "security", "lock" -> Settings.ACTION_SECURITY_SETTINGS
             else -> Settings.ACTION_SETTINGS
         }
         return launchSafeIntent(Intent(action), "$panel settings khol di, Boss.")
+    }
+
+    fun openAccessibilitySettings(): ActionOutcome {
+        return launchSafeIntent(
+            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS),
+            "Accessibility settings khol di Boss — wahan 'Maya' on kar dijiye."
+        )
+    }
+
+    fun listInstalledApps(filterQuery: String = ""): ActionOutcome {
+        return try {
+            val pm = appContext.packageManager
+            val mainIntent = Intent(Intent.ACTION_MAIN, null).addCategory(Intent.CATEGORY_LAUNCHER)
+            val apps = pm.queryIntentActivities(mainIntent, 0)
+                .map { it.loadLabel(pm).toString().trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+                .sorted()
+
+            val matched = if (filterQuery.isNotBlank()) {
+                apps.filter { it.contains(filterQuery.trim(), ignoreCase = true) }
+            } else {
+                apps
+            }
+
+            if (matched.isEmpty()) {
+                ActionOutcome(false, "Boss, '$filterQuery' se milta koi installed app nahi mila.")
+            } else {
+                val preview = matched.take(10).joinToString(", ")
+                ActionOutcome(
+                    true,
+                    "Phone pe ${matched.size} apps mile, jaise: $preview."
+                )
+            }
+        } catch (e: Exception) {
+            ActionOutcome(false, "Installed apps padhne me dikkat aayi: ${e.localizedMessage}")
+        }
     }
 
     fun openAppByName(query: String, appNicknames: Map<String, String> = emptyMap()): ActionOutcome {
@@ -214,6 +263,10 @@ class PhoneActionExecutor(private val context: Context) {
         return launchSafeIntent(intent, "$formatted ka alarm khol diya, Boss.")
     }
 
+    fun showAlarms(): ActionOutcome {
+        return launchSafeIntent(Intent(AlarmClock.ACTION_SHOW_ALARMS), "Alarms list khol di, Boss.")
+    }
+
     fun setTimer(seconds: Int, label: String): ActionOutcome {
         val secs = seconds.coerceAtLeast(5)
         val intent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
@@ -246,6 +299,44 @@ class PhoneActionExecutor(private val context: Context) {
         }
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         return launchSafeIntent(intent, "WhatsApp pe message ready kar diya, Boss.")
+    }
+
+    fun sendTelegram(handleOrPhone: String, message: String): ActionOutcome {
+        val encodedMsg = URLEncoder.encode(message, "UTF-8")
+        val tgNative = Intent(Intent.ACTION_VIEW, Uri.parse("tg://msg?text=$encodedMsg")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return if (tgNative.resolveActivity(appContext.packageManager) != null) {
+            launchSafeIntent(tgNative, "Telegram me message ready kar diya, Boss.")
+        } else {
+            val cleanHandle = handleOrPhone.trim().removePrefix("@")
+            val webUrl = if (cleanHandle.isNotBlank() && cleanHandle.none { it.isWhitespace() }) {
+                "https://t.me/$cleanHandle?text=$encodedMsg"
+            } else {
+                "https://t.me/share/url?url=&text=$encodedMsg"
+            }
+            launchSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(webUrl)), "Telegram share khol diya, Boss.")
+        }
+    }
+
+    fun saveContactIntent(name: String, phone: String, email: String = ""): ActionOutcome {
+        val intent = Intent(ContactsContract.Intents.Insert.ACTION).apply {
+            type = ContactsContract.RawContacts.CONTENT_TYPE
+            if (name.isNotBlank()) putExtra(ContactsContract.Intents.Insert.NAME, name.trim())
+            if (phone.isNotBlank()) putExtra(ContactsContract.Intents.Insert.PHONE, phone.trim())
+            if (email.isNotBlank()) putExtra(ContactsContract.Intents.Insert.EMAIL, email.trim())
+        }
+        return launchSafeIntent(intent, "Contact '${name.ifBlank { phone }}' save screen khol di, Boss.")
+    }
+
+    fun shareText(title: String, body: String): ActionOutcome {
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TEXT, body)
+        }
+        val chooser = Intent.createChooser(sendIntent, title.ifBlank { "Share via Maya" })
+        return launchSafeIntent(chooser, "Share sheet khol di, Boss.")
     }
 
     fun sendSms(phone: String, message: String): ActionOutcome {

@@ -20,4 +20,5 @@
     <string name="cd_camera_capture">Camera se live dekhein</string>
     <string name="cd_speak_toggle">Voice reply chalu ya band karein</string>
     <string name="cd_wake_word_toggle">Hands-free Hey Maya wake word toggle</string>
+    <string name="accessibility_service_description">Maya Phone Autopilot — Boss ke kehne par screen text padhne, buttons tap karne, scroll karne, aur Home/Back navigation chalane ke liye.</string>
 </resources>

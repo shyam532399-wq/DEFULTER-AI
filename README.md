@@ -8,14 +8,15 @@ Maya ek real-action Hinglish voice aur phone assistant hai jo Kotlin, Jetpack Co
 
 - **3 Distinct Personas & Moods:** Switch live between **Maya** (warm Hinglish default), **Friday** (crisp tactical), and **Venom** (bold witty) with `Calm`, `Excited`, or `Soft` voice tones.
 - **Wake-Word & Listen Modes:** Hands-free `"Hey Maya"` / `"Hello Maya"` / `"Wake up Maya"` loop plus `"Sirf meri suno"` vs `"Sabki suno"` modes.
-- **Deterministic Confirmation Gate (Golden Rule #5):** Risky actions (WhatsApp, SMS, Email, Document/Skill delete, Skill save) never execute silently — Maya previews the exact payload and waits for explicit Boss confirmation (`Haan`).
+- **Deterministic Confirmation Gate (Golden Rule #5):** Risky actions (WhatsApp, Telegram, SMS, Email, SOS, Document/Skill delete, Skill save) never execute silently — Maya previews the exact payload and waits for explicit Boss confirmation (`Haan`).
+- **Phone Autopilot (Accessibility Service):** Opt-in `MayaAccessibilityService` for label-first `tap_text`, `type_text`, gesture `scroll_screen`, `read_screen_text`, `wait_for_screen_text`, and Home/Back/Recents/Lock navigation.
 - **2–8 Step Mission Stepper:** Visual step progress with `Undo Last Step` and `Cancel Mission`.
-- **Maya Board, Image Studio & Business Suite:**
-  - Cloud-synced **Maya Board** for long reports, emails, and deep research (never reading long URLs or walls of text aloud).
-  - **Gemini Image Studio** for runtime visual generation and direct MediaStore Gallery export.
-  - **Business Suite** for GST/tax breakdowns, unit economics, marketing plans, and pitch drafts.
-- **Guardian & Memory Vault:** Persistent Boss preferences, app nicknames, reminders, and an interactive **Touch Guard** alert trap.
-- **Real Android Hardware & Live Feeds:** Camera torch, battery telemetry, media volume/ringer, system alarms, calendar events, clipboard, Maps navigation, plus live Open-Meteo weather, CoinGecko crypto, Frankfurter forex, and Hacker News headlines.
+- **Maya Board, Image Studio & Section 5 Business Suite:**
+  - Cloud-synced **Maya Board** for long reports, single clean email drafts, and deep research (never reading URLs or walls of text aloud).
+  - **Gemini Image Macro** for runtime image generation and direct MediaStore Gallery export.
+  - **Business Suite** for Customer Review Replies, Review Themes (`## Khud dekhne wale (serious)`), 8-line `"ho sakta hai"` Dashboard summaries, and Marketing/Ads plans.
+- **Guardian & Memory Vault:** Voice Guardian passphrase speaker check, Boss Personal Hinglish Wiki, app nicknames, reminders, watchlist, and **Touch Guard** alert trap.
+- **Real Android Hardware, Markets & Dev Feeds:** Camera torch, battery telemetry, media volume/ringer, system alarms, calendar, Contacts insert, clipboard, Maps navigation, plus live Yahoo Finance NSE/US stocks, CoinGecko crypto, Frankfurter forex, DuckDuckGo + Wikipedia web search, webpage URL reader, Hacker News (<7d freshness check), and GitHub REST API repo/Actions status.
 
 ---
 

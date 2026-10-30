@@ -274,6 +274,7 @@ class MayaCriticalUserJourneyTest {
         composeTestRule.onNodeWithText("Phone Deck, Skills & Macros").assertIsDisplayed()
         composeTestRule.onNodeWithTag("create_skill_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("torch_quick_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("autopilot_quick_card").assertIsDisplayed()
 
         // Section 4.1: Saving a new skill must ask confirmation first
         assertNull(vm.pendingConfirmation.value)
@@ -301,5 +302,12 @@ class MayaCriticalUserJourneyTest {
 
         val timeStr = executor.getCurrentTimeText("Asia/Kolkata")
         assertTrue(timeStr.contains("Asia/Kolkata"))
+
+        // Verify ListenMode voice shortcuts ("sirf meri suno" / "sabki suno")
+        val vm = buildTestViewModel("cuj6_boss")
+        vm.sendCommand("Sabki suno")
+        assertTrue(vm.messages.value.last().text.contains("sabki awaaz"))
+        vm.sendCommand("Sirf meri suno")
+        assertTrue(vm.messages.value.last().text.contains("sirf aapki awaaz"))
     }
 }

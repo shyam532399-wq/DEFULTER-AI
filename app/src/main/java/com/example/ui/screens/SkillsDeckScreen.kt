@@ -26,9 +26,9 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.FlashlightOff
 import androidx.compose.material.icons.filled.FlashlightOn
-import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -53,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.DataUiState
 import com.example.data.model.SkillPlaybook
 import com.example.domain.DeviceTelemetry
@@ -75,15 +76,17 @@ fun SkillsDeckScreen(
         viewModel.refreshTelemetry()
     }
 
+    val autopilotActive by viewModel.autopilotConnected.collectAsStateWithLifecycle()
     var showCreateSkillDialog by remember { mutableStateOf(false) }
     val accent = LocalPersonaAccent.current
 
     val builtInMacros = remember {
         listOf(
-            Triple("gemini image", "Gemini Image Macro", "Gemini se image banao: futuristic Mumbai skyline at dusk"),
+            Triple("gemini image", "Gemini Image Macro", "Gemini se image banao: Sunset on a beach in Goa, cinematic"),
             Triple("chatgpt image", "ChatGPT Image Flow", "ChatGPT kholkar image prompt bhejne ka mission plan banao"),
-            Triple("gemini se poochho", "Live Deep Research", "EV charging business India 2026 par short research Board pe rakho"),
-            Triple("subah alarm", "Morning 7 AM Alarm", "Mujhe kal subah 7 baje jagana")
+            Triple("gemini video", "Gemini Video Flow", "Gemini app me video generation ka step-by-step mission plan banao"),
+            Triple("chatgpt se poochho", "ChatGPT Se Poochho", "ChatGPT app kholkar sawaal puchhne aur jawab laane ka mission plan banao"),
+            Triple("gemini se poochho", "Gemini Se Poochho (Research)", "EV charging business India 2026 par short research Board pe rakho")
         )
     }
 
@@ -112,7 +115,7 @@ fun SkillsDeckScreen(
                             style = MaterialTheme.typography.headlineSmall
                         )
                         Text(
-                            text = "Real hardware controls + Hinglish playbooks (max 25 skills)",
+                            text = "Real hardware + Accessibility Autopilot + Hinglish playbooks (max 25)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -153,7 +156,7 @@ fun SkillsDeckScreen(
             // 1. Live Hardware & OS Quick Deck
             item {
                 Text(
-                    text = "Live Phone Hardware & Quick Actions",
+                    text = "Live Phone Hardware & Autopilot",
                     style = MaterialTheme.typography.titleMedium,
                     color = accent.primary
                 )
@@ -173,12 +176,14 @@ fun SkillsDeckScreen(
                         onClick = viewModel::quickToggleTorch
                     )
                     HardwareTile(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.BatteryChargingFull,
-                        title = "${telemetry.batteryPercent}% Battery",
-                        subtitle = if (telemetry.isCharging) "Charging active" else "On battery",
-                        active = telemetry.isCharging,
-                        onClick = { viewModel.refreshTelemetry() }
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("autopilot_quick_card"),
+                        icon = Icons.Filled.TouchApp,
+                        title = if (autopilotActive) "Autopilot ON" else "Autopilot Setup",
+                        subtitle = if (autopilotActive) "tap_text & screen ready" else "Enable in Accessibility",
+                        active = autopilotActive,
+                        onClick = viewModel::openAccessibilityAutopilotSettings
                     )
                 }
                 Spacer(modifier = Modifier.height(10.dp))
@@ -188,7 +193,15 @@ fun SkillsDeckScreen(
                 ) {
                     HardwareTile(
                         modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.VolumeUp,
+                        icon = Icons.Filled.BatteryChargingFull,
+                        title = "${telemetry.batteryPercent}% Battery",
+                        subtitle = if (telemetry.isCharging) "Charging active" else "On battery",
+                        active = telemetry.isCharging,
+                        onClick = { viewModel.refreshTelemetry() }
+                    )
+                    HardwareTile(
+                        modifier = Modifier.weight(1f),
+                        icon = Icons.AutoMirrored.Filled.VolumeUp,
                         title = "Vol ${telemetry.mediaVolumePercent}%",
                         subtitle = "Mode: ${telemetry.ringerModeLabel}",
                         active = false,
@@ -201,14 +214,6 @@ fun SkillsDeckScreen(
                         subtitle = "System clock",
                         active = false,
                         onClick = { onRunMacroInCockpit("Mujhe kal subah 7 baje jagana") }
-                    )
-                    HardwareTile(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.Map,
-                        title = "Maps Route",
-                        subtitle = "Navigate nearby",
-                        active = false,
-                        onClick = { onRunMacroInCockpit("Nearest coffee shop map pe dikhao") }
                     )
                 }
             }

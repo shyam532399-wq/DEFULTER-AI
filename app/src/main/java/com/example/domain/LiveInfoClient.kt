@@ -27,13 +27,17 @@ class LiveInfoClient {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    private fun jsonRequest(url: String): Request = Request.Builder()
+        .url(url)
+        .header("User-Agent", "MayaPhoneAgent/1.0 (Android)")
+        .header("Accept", "application/json")
+        .build()
+
     suspend fun fetchWeather(cityQuery: String): LiveInfoResult = withContext(Dispatchers.IO) {
         try {
             val cleanCity = cityQuery.trim().ifBlank { "Mumbai" }
             val encoded = URLEncoder.encode(cleanCity, "UTF-8")
-            val geoReq = Request.Builder()
-                .url("https://geocoding-api.open-meteo.com/v1/search?name=$encoded&count=1&language=en&format=json")
-                .build()
+            val geoReq = jsonRequest("https://geocoding-api.open-meteo.com/v1/search?name=$encoded&count=1&language=en&format=json")
 
             val geoJson = httpClient.newCall(geoReq).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext LiveInfoResult(false, "Weather server se connect nahi ho paya, Boss.")
@@ -53,7 +57,7 @@ class LiveInfoClient {
 
             val weatherUrl = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
                 "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
-            val wJson = httpClient.newCall(Request.Builder().url(weatherUrl).build()).execute().use { resp ->
+            val wJson = httpClient.newCall(jsonRequest(weatherUrl)).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext LiveInfoResult(false, "Live mausam data nahi mila, Boss.")
                 JSONObject(resp.body?.string().orEmpty())
             }
@@ -79,8 +83,106 @@ class LiveInfoClient {
                     appendLine("- **Wind Speed:** $wind km/h")
                 }
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             LiveInfoResult(false, "Boss, abhi live weather laane me network error aaya.")
+        }
+    }
+
+    /**
+     * Section 3.7 & Section 5 Stocks Rule:
+     * Fetches live NSE/BSE & global stock/index quotes via Yahoo Finance public chart API.
+     * Strictly 2 Hinglish lines spoken, full snapshot on Board, ZERO buy/sell/target advice.
+     */
+    suspend fun fetchStockQuote(query: String): LiveInfoResult = withContext(Dispatchers.IO) {
+        try {
+            val raw = query.trim().ifBlank { "RELIANCE.NS" }
+            val resolvedSymbol = resolveStockTicker(raw)
+            val encodedSym = URLEncoder.encode(resolvedSymbol, "UTF-8")
+            val chartUrl = "https://query1.finance.yahoo.com/v8/finance/chart/$encodedSym?interval=1d&range=5d"
+
+            val root = httpClient.newCall(jsonRequest(chartUrl)).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext LiveInfoResult(false, "Boss, '$raw' ka stock data abhi fetch nahi ho saka.")
+                JSONObject(resp.body?.string().orEmpty())
+            }
+
+            val resultArr = root.optJSONObject("chart")?.optJSONArray("result")
+            if (resultArr == null || resultArr.length() == 0) {
+                return@withContext LiveInfoResult(false, "Boss, '$raw' ticker market feed me nahi mila.")
+            }
+
+            val meta = resultArr.getJSONObject(0).getJSONObject("meta")
+            val symbol = meta.optString("symbol", resolvedSymbol)
+            val shortName = meta.optString("shortName", symbol).ifBlank { symbol }
+            val currency = meta.optString("currency", "INR")
+            val price = meta.optDouble("regularMarketPrice", 0.0)
+            val prevClose = meta.optDouble("chartPreviousClose", meta.optDouble("previousClose", price))
+            val dayHigh = meta.optDouble("regularMarketDayHigh", price)
+            val dayLow = meta.optDouble("regularMarketDayLow", price)
+
+            if (price <= 0.0) {
+                return@withContext LiveInfoResult(false, "Boss, '$symbol' ka live rate abhi uplabdh nahi hai.")
+            }
+
+            val diff = price - prevClose
+            val pct = if (prevClose > 0.0) (diff / prevClose) * 100.0 else 0.0
+            val curPrefix = if (currency.equals("INR", ignoreCase = true)) "₹" else "$currency "
+            val pctStr = String.format(Locale.US, "%+.2f%%", pct)
+            val priceStr = String.format(Locale.US, "%,.2f", price)
+
+            LiveInfoResult(
+                success = true,
+                spokenSummary = "$shortName ($symbol) abhi $curPrefix$priceStr pe hai ($pctStr badlaav). Poora snapshot Board pe rakh diya hai, Boss.",
+                boardTitle = "Stock Snapshot — $shortName ($symbol)",
+                boardCategory = "market",
+                boardMarkdown = buildString {
+                    appendLine("# $shortName ($symbol) — Live Quote")
+                    appendLine("- **Current Price:** $curPrefix$priceStr")
+                    appendLine("- **Previous Close:** $curPrefix${String.format(Locale.US, "%,.2f", prevClose)}")
+                    appendLine("- **Change:** ${String.format(Locale.US, "%+.2f", diff)} ($pctStr)")
+                    appendLine("- **Day Range:** $curPrefix${String.format(Locale.US, "%,.2f", dayLow)} – $curPrefix${String.format(Locale.US, "%,.2f", dayHigh)}")
+                    appendLine()
+                    appendLine("_Note: Ye sirf live market data hai — koi kharidne/bechne ya target price ki salah nahi._")
+                }
+            )
+        } catch (_: Exception) {
+            LiveInfoResult(false, "Boss, stock rate laane me network dikkat aayi.")
+        }
+    }
+
+    private fun resolveStockTicker(raw: String): String {
+        val upper = raw.trim().uppercase(Locale.ROOT)
+        val shortcuts = mapOf(
+            "RELIANCE" to "RELIANCE.NS",
+            "TCS" to "TCS.NS",
+            "INFY" to "INFY.NS",
+            "INFOSYS" to "INFY.NS",
+            "HDFC" to "HDFCBANK.NS",
+            "HDFCBANK" to "HDFCBANK.NS",
+            "HDFC BANK" to "HDFCBANK.NS",
+            "ICICI" to "ICICIBANK.NS",
+            "SBIN" to "SBIN.NS",
+            "SBI" to "SBIN.NS",
+            "TATAMOTORS" to "TATAMOTORS.NS",
+            "TATA MOTORS" to "TATAMOTORS.NS",
+            "ZOMATO" to "ETERNAL.NS",
+            "NIFTY" to "^NSEI",
+            "NIFTY 50" to "^NSEI",
+            "SENSEX" to "^BSESN"
+        )
+        shortcuts[upper]?.let { return it }
+        if (upper.contains(".") || upper.startsWith("^")) return upper
+
+        return try {
+            val searchUrl = "https://query2.finance.yahoo.com/v1/finance/search?q=${URLEncoder.encode(raw, "UTF-8")}&quotesCount=3&newsCount=0"
+            httpClient.newCall(jsonRequest(searchUrl)).execute().use { resp ->
+                if (!resp.isSuccessful) return upper
+                val quotes = JSONObject(resp.body?.string().orEmpty()).optJSONArray("quotes")
+                if (quotes != null && quotes.length() > 0) {
+                    quotes.getJSONObject(0).optString("symbol", upper)
+                } else upper
+            }
+        } catch (_: Exception) {
+            upper
         }
     }
 
@@ -95,7 +197,7 @@ class LiveInfoClient {
                 "xrp", "ripple" -> "ripple"
                 else -> {
                     val searchUrl = "https://api.coingecko.com/api/v3/search?query=${URLEncoder.encode(clean, "UTF-8")}"
-                    httpClient.newCall(Request.Builder().url(searchUrl).build()).execute().use { resp ->
+                    httpClient.newCall(jsonRequest(searchUrl)).execute().use { resp ->
                         val body = resp.body?.string().orEmpty()
                         val coins = if (resp.isSuccessful && body.isNotBlank()) {
                             JSONObject(body).optJSONArray("coins")
@@ -108,7 +210,7 @@ class LiveInfoClient {
             }
 
             val priceUrl = "https://api.coingecko.com/api/v3/simple/price?ids=$coinId&vs_currencies=inr,usd&include_24hr_change=true"
-            val pJson = httpClient.newCall(Request.Builder().url(priceUrl).build()).execute().use { resp ->
+            val pJson = httpClient.newCall(jsonRequest(priceUrl)).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext LiveInfoResult(false, "Market rate server busy hai, Boss.")
                 JSONObject(resp.body?.string().orEmpty())
             }
@@ -123,7 +225,6 @@ class LiveInfoClient {
             val chgFormatted = String.format(Locale.US, "%+.2f%%", chg)
             val titleCoin = coinId.replaceFirstChar { it.uppercase() }
 
-            // Strict Section 5 Market Rule: Hinglish 2 lines, NO buy/sell or target advice, rest on Board.
             LiveInfoResult(
                 success = true,
                 spokenSummary = "$titleCoin abhi ₹${String.format(Locale.US, "%,.0f", inr)} ($${String.format(Locale.US, "%,.2f", usd)}) pe hai, 24h badlaav $chgFormatted raha. Poora snapshot Board pe rakh diya hai, Boss.",
@@ -148,7 +249,7 @@ class LiveInfoClient {
             val base = fromCurrency.trim().uppercase(Locale.ROOT).ifBlank { "USD" }
             val target = toCurrency.trim().uppercase(Locale.ROOT).ifBlank { "INR" }
             val url = "https://api.frankfurter.dev/v1/latest?base=$base&symbols=$target"
-            val json = httpClient.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+            val json = httpClient.newCall(jsonRequest(url)).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext LiveInfoResult(false, "Forex rate nahi mil saka, Boss.")
                 JSONObject(resp.body?.string().orEmpty())
             }
@@ -172,10 +273,7 @@ class LiveInfoClient {
 
     suspend fun fetchFreshNews(): LiveInfoResult = withContext(Dispatchers.IO) {
         try {
-            val idsReq = Request.Builder()
-                .url("https://hacker-news.firebaseio.com/v0/topstories.json")
-                .build()
-            val idsArr = httpClient.newCall(idsReq).execute().use { resp ->
+            val idsArr = httpClient.newCall(jsonRequest("https://hacker-news.firebaseio.com/v0/topstories.json")).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext LiveInfoResult(false, "News feed abhi reachable nahi hai, Boss.")
                 JSONArray(resp.body?.string().orEmpty())
             }
@@ -186,7 +284,7 @@ class LiveInfoClient {
             for (i in 0 until count) {
                 val id = idsArr.optInt(i)
                 val itemUrl = "https://hacker-news.firebaseio.com/v0/item/$id.json"
-                httpClient.newCall(Request.Builder().url(itemUrl).build()).execute().use { r ->
+                httpClient.newCall(jsonRequest(itemUrl)).execute().use { r ->
                     if (r.isSuccessful) {
                         val obj = JSONObject(r.body?.string().orEmpty())
                         val title = obj.optString("title", "")
@@ -201,7 +299,6 @@ class LiveInfoClient {
             if (headlines.isEmpty()) {
                 return@withContext LiveInfoResult(false, "Abhi koi fresh khabar nahi mili, Boss.")
             }
-            // Section 5 News Rule: Sirf 2-3 sabse fresh; >7 days old marked "purana"
             val spoken = headlines.take(2).joinToString(" | ") { (t, old) ->
                 if (old) "(Purana) $t" else t
             }
@@ -221,6 +318,231 @@ class LiveInfoClient {
             )
         } catch (_: Exception) {
             LiveInfoResult(false, "Khabrein fetch karne me network dikkat aayi, Boss.")
+        }
+    }
+
+    /**
+     * Section 3.6 Live Web Search (`search_web`) using DuckDuckGo Instant Answer + Wikipedia REST API.
+     */
+    suspend fun searchWebLive(query: String): LiveInfoResult = withContext(Dispatchers.IO) {
+        val clean = query.trim()
+        if (clean.isBlank()) return@withContext LiveInfoResult(false, "Search topic batayein, Boss.")
+        try {
+            val encoded = URLEncoder.encode(clean, "UTF-8")
+            val ddgUrl = "https://api.duckduckgo.com/?q=$encoded&format=json&no_html=1&skip_disambig=1"
+            var abstractText = ""
+            var heading = clean
+            val relatedBullets = mutableListOf<String>()
+
+            httpClient.newCall(jsonRequest(ddgUrl)).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val obj = JSONObject(resp.body?.string().orEmpty())
+                    abstractText = obj.optString("AbstractText", "").trim()
+                    heading = obj.optString("Heading", clean).ifBlank { clean }
+                    val related = obj.optJSONArray("RelatedTopics")
+                    if (related != null) {
+                        for (i in 0 until minOf(4, related.length())) {
+                            val item = related.optJSONObject(i)
+                            val txt = item?.optString("Text", "").orEmpty()
+                            if (txt.isNotBlank()) relatedBullets.add(txt)
+                        }
+                    }
+                }
+            }
+
+            if (abstractText.isBlank()) {
+                val wikiSearchUrl = "https://en.wikipedia.org/w/api.php?action=opensearch&search=$encoded&limit=1&namespace=0&format=json"
+                var bestTitle = ""
+                httpClient.newCall(jsonRequest(wikiSearchUrl)).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val arr = JSONArray(resp.body?.string().orEmpty())
+                        val titles = arr.optJSONArray(1)
+                        bestTitle = titles?.optString(0, "").orEmpty()
+                    }
+                }
+                if (bestTitle.isNotBlank()) {
+                    val summaryUrl = "https://en.wikipedia.org/api/rest_v1/page/summary/${URLEncoder.encode(bestTitle.replace(" ", "_"), "UTF-8")}"
+                    httpClient.newCall(jsonRequest(summaryUrl)).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val sObj = JSONObject(resp.body?.string().orEmpty())
+                            heading = sObj.optString("title", bestTitle)
+                            abstractText = sObj.optString("extract", "").trim()
+                        }
+                    }
+                }
+            }
+
+            if (abstractText.isBlank() && relatedBullets.isEmpty()) {
+                return@withContext LiveInfoResult(false, "Boss, '$clean' par seedha web abstract nahi mila.")
+            }
+
+            val firstTwoSentences = (abstractText.ifBlank { relatedBullets.first() })
+                .split(Regex("(?<=[.!?])\\s+"))
+                .take(2)
+                .joinToString(" ")
+                .take(240)
+
+            val md = buildString {
+                appendLine("# Web Lookup: $heading")
+                if (abstractText.isNotBlank()) {
+                    appendLine(abstractText)
+                    appendLine()
+                }
+                if (relatedBullets.isNotEmpty()) {
+                    appendLine("## Key Points")
+                    relatedBullets.forEach { appendLine("- $it") }
+                }
+            }
+
+            LiveInfoResult(
+                success = true,
+                spokenSummary = "$firstTwoSentences Poora note Board pe rakh diya hai, Boss.",
+                boardTitle = "Web Search — $heading",
+                boardCategory = "research",
+                boardMarkdown = md
+            )
+        } catch (_: Exception) {
+            LiveInfoResult(false, "Web search me network dikkat aayi, Boss.")
+        }
+    }
+
+    /**
+     * Section 3.6 `read_url` — Fetches webpage HTML and extracts untrusted plain text safely.
+     */
+    suspend fun fetchUrlCleanText(rawUrl: String): Result<Pair<String, String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val normalized = if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+                rawUrl.trim()
+            } else {
+                "https://${rawUrl.trim()}"
+            }
+            val req = Request.Builder()
+                .url(normalized)
+                .header("User-Agent", "Mozilla/5.0 (Android; MayaPhoneAgent/1.0)")
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("HTTP ${resp.code}")
+                val html = resp.body?.string().orEmpty()
+                val titleMatch = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+                    .find(html)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+                val cleanText = html
+                    .replace(Regex("<script[^>]*>.*?</script>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), " ")
+                    .replace(Regex("<style[^>]*>.*?</style>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), " ")
+                    .replace(Regex("<[^>]+>"), " ")
+                    .replace("&nbsp;", " ")
+                    .replace("&amp;", "&")
+                    .replace(Regex("\\s+"), " ")
+                    .trim()
+                    .take(6_000)
+                if (cleanText.isBlank()) error("Page me readable text nahi mila.")
+                (titleMatch.ifBlank { normalized }) to cleanText
+            }
+        }
+    }
+
+    /**
+     * Section 3.10 Coding & Dev — Real GitHub REST API (`github_repo_overview`, `github_list_repos`, `github_actions_status`).
+     */
+    suspend fun fetchGitHubInfo(query: String): LiveInfoResult = withContext(Dispatchers.IO) {
+        val clean = query.trim().removePrefix("https://github.com/").trim('/')
+        if (clean.isBlank()) return@withContext LiveInfoResult(false, "GitHub username ya owner/repo batayein, Boss.")
+
+        try {
+            if (clean.contains("/") && !clean.contains(" ")) {
+                val parts = clean.split("/")
+                val owner = parts[0]
+                val repo = parts[1]
+                val repoReq = Request.Builder()
+                    .url("https://api.github.com/repos/$owner/$repo")
+                    .header("User-Agent", "MayaPhoneAgent/1.0")
+                    .header("Accept", "application/vnd.github+json")
+                    .build()
+
+                val repoObj = httpClient.newCall(repoReq).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext LiveInfoResult(false, "GitHub pe '$owner/$repo' public repo nahi mila, Boss.")
+                    JSONObject(resp.body?.string().orEmpty())
+                }
+
+                val stars = repoObj.optInt("stargazers_count", 0)
+                val issues = repoObj.optInt("open_issues_count", 0)
+                val lang = repoObj.optString("language", "Code")
+                val desc = repoObj.optString("description", "")
+
+                var latestRunStatus = "No recent workflow runs"
+                val runsReq = Request.Builder()
+                    .url("https://api.github.com/repos/$owner/$repo/actions/runs?per_page=3")
+                    .header("User-Agent", "MayaPhoneAgent/1.0")
+                    .header("Accept", "application/vnd.github+json")
+                    .build()
+                httpClient.newCall(runsReq).execute().use { r ->
+                    if (r.isSuccessful) {
+                        val runs = JSONObject(r.body?.string().orEmpty()).optJSONArray("workflow_runs")
+                        if (runs != null && runs.length() > 0) {
+                            val top = runs.getJSONObject(0)
+                            val name = top.optString("name", "Workflow")
+                            val status = top.optString("status", "")
+                            val conclusion = top.optString("conclusion", "").ifBlank { status }
+                            latestRunStatus = "$name: $conclusion"
+                        }
+                    }
+                }
+
+                val md = buildString {
+                    appendLine("# GitHub Repo: $owner/$repo")
+                    if (desc.isNotBlank()) appendLine("> $desc\n")
+                    appendLine("- **Language:** $lang")
+                    appendLine("- **Stars:** $stars | **Open Issues/PRs:** $issues")
+                    appendLine("- **Latest GitHub Actions:** $latestRunStatus")
+                }
+
+                return@withContext LiveInfoResult(
+                    success = true,
+                    spokenSummary = "$owner/$repo ($lang) me $stars stars, $issues open issues hain, aur latest Action '$latestRunStatus' hai. Overview Board pe hai, Boss.",
+                    boardTitle = "GitHub — $owner/$repo",
+                    boardCategory = "research",
+                    boardMarkdown = md
+                )
+            } else {
+                // User repos or keyword search
+                val singleToken = !clean.contains(" ")
+                val url = if (singleToken) {
+                    "https://api.github.com/users/${URLEncoder.encode(clean, "UTF-8")}/repos?sort=updated&per_page=5"
+                } else {
+                    "https://api.github.com/search/repositories?q=${URLEncoder.encode(clean, "UTF-8")}&per_page=5"
+                }
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "MayaPhoneAgent/1.0")
+                    .header("Accept", "application/vnd.github+json")
+                    .build()
+
+                val reposList = mutableListOf<String>()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext LiveInfoResult(false, "GitHub se '$clean' ki jankari nahi mili, Boss.")
+                    val body = resp.body?.string().orEmpty()
+                    val arr = if (singleToken) JSONArray(body) else JSONObject(body).optJSONArray("items") ?: JSONArray()
+                    for (i in 0 until minOf(5, arr.length())) {
+                        val item = arr.getJSONObject(i)
+                        val fullName = item.optString("full_name", "")
+                        val st = item.optInt("stargazers_count", 0)
+                        if (fullName.isNotBlank()) reposList.add("$fullName (★$st)")
+                    }
+                }
+
+                if (reposList.isEmpty()) {
+                    return@withContext LiveInfoResult(false, "GitHub pe '$clean' ke liye koi public repo nahi mila, Boss.")
+                }
+
+                return@withContext LiveInfoResult(
+                    success = true,
+                    spokenSummary = "GitHub pe top repos mile: ${reposList.take(2).joinToString(", ")}. Poori list Board pe rakh di hai, Boss.",
+                    boardTitle = "GitHub Repos — $clean",
+                    boardCategory = "research",
+                    boardMarkdown = "# GitHub Repositories ($clean)\n" + reposList.joinToString("\n") { "- **$it**" }
+                )
+            }
+        } catch (_: Exception) {
+            LiveInfoResult(false, "GitHub API call me network error aaya, Boss.")
         }
     }
 

@@ -711,11 +711,13 @@ private fun QuickHinglishChipsRow(onPickPrompt: (String) -> Unit) {
     val suggestions = listOf(
         "Torch on karo",
         "Battery kitni hai?",
-        "Mumbai ka mausam batao",
+        "Reliance stock ka haal?",
         "Bitcoin ka haal?",
+        "Mumbai ka mausam batao",
         "Aaj ki ek-do khabar?",
         "Kal subah 7 baje jagana",
-        "Rahul ko WhatsApp pe bol do main late hoon"
+        "Rahul ko WhatsApp pe bol do main late hoon",
+        "shyam532399 ke GitHub repos dikhao"
     )
     Row(
         modifier = Modifier
