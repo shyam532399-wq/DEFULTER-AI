@@ -24,6 +24,7 @@ import com.example.domain.ApiKeyConfigStore
 import com.example.domain.ApiKeyConnectionStatus
 import com.example.domain.ApiKeyVerificationResult
 import com.example.domain.ApiProvider
+import com.example.domain.CustomApiInferenceClient
 import com.example.domain.GitHubSkillStoreClient
 import com.example.domain.HudEffectTheme
 import com.example.domain.LiveInfoClient
@@ -43,6 +44,11 @@ import com.example.ui.screens.GuardianMemoryScreen
 import com.example.ui.screens.SkillsDeckScreen
 import com.example.ui.theme.MayaTheme
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -80,7 +86,8 @@ class MayaCriticalUserJourneyTest {
 
     private fun buildTestViewModel(
         uid: String = MayaRepository.LOCAL_BOSS_ID,
-        customKeyStore: ApiKeyConfigStore? = null
+        customKeyStore: ApiKeyConfigStore? = null,
+        customInferenceClient: CustomApiInferenceClient = CustomApiInferenceClient()
     ): MayaViewModel {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val keyStore = customKeyStore ?: ApiKeyConfigStore(context)
@@ -88,7 +95,7 @@ class MayaCriticalUserJourneyTest {
             repository = MayaRepository(database.mayaDao(), uid),
             phoneExecutor = PhoneActionExecutor(context),
             voiceEngine = MayaVoiceEngine(context),
-            aiBrain = MayaAiBrain(apiKeyStore = keyStore),
+            aiBrain = MayaAiBrain(apiKeyStore = keyStore, customInferenceClient = customInferenceClient),
             liveInfoClient = LiveInfoClient(),
             currentUserId = uid,
             initialDisplayName = "Boss",
@@ -558,6 +565,117 @@ class MayaCriticalUserJourneyTest {
         composeTestRule.mainClock.advanceTimeBy(150)
         assertTrue(vm.showApiKeyDialog.value)
         composeTestRule.onNodeWithTag("api_key_connect_dialog").assertIsDisplayed()
+
+        composeTestRule.mainClock.autoAdvance = true
+    }
+
+    @Test
+    fun cuj10_connectedApiKey_handlesGeminiThinkingParts_modelFallback_andRendersReplyBubble() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Verify Gemini 2.5 thinking-part filtering ignores internal {thought} braces
+        val geminiThinkingBody = """
+            {
+              "candidates": [{
+                "content": {
+                  "parts": [
+                    { "thought": true, "text": "Boss asked {hello}. Let me draft JSON." },
+                    { "text": "{\"spokenReply\":\"Haan Boss, aapki Gemini API key bilkul mast chal rahi hai!\",\"actionType\":\"NONE\"}" }
+                  ]
+                }
+              }]
+            }
+        """.trimIndent()
+        val extracted = CustomApiInferenceClient.extractNonThoughtGeminiText(geminiThinkingBody)
+        val decision = CustomApiInferenceClient.parseAgentDecisionResilient(extracted, listOf("NONE", "GET_BATTERY"))
+        assertEquals("Haan Boss, aapki Gemini API key bilkul mast chal rahi hai!", decision.spokenReply)
+        assertEquals("NONE", decision.actionType)
+
+        // 2. Verify plain-text & <think> recovery never crashes with JSONException
+        val plainDecision = CustomApiInferenceClient.parseAgentDecisionResilient(
+            "<think>internal reasoning</think> Namaste Boss, main seedha jawab de rahi hoon.",
+            listOf("NONE")
+        )
+        assertEquals("Namaste Boss, main seedha jawab de rahi hoon.", plainDecision.spokenReply)
+
+        // 3. End-to-end OkHttp simulation: primary model returns 404 -> auto-falls back to gemini-2.5-flash -> renders reply in Cockpit
+        val mockHttp = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val url = req.url.toString()
+                val media = "application/json".toMediaType()
+                if (url.contains("gemini-2.0-flash:generateContent")) {
+                    Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(404)
+                        .message("Not Found")
+                        .body("""{"error":{"message":"Model gemini-2.0-flash retired"}}""".toResponseBody(media))
+                        .build()
+                } else {
+                    Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(geminiThinkingBody.toResponseBody(media))
+                        .build()
+                }
+            }
+            .build()
+
+        val fakeVerifier = com.example.domain.ApiKeyVerifier { _, _, _, _ ->
+            Result.success(
+                ApiKeyVerificationResult(
+                    resolvedModel = "gemini-2.0-flash",
+                    fallbackModels = listOf("gemini-2.5-flash")
+                )
+            )
+        }
+
+        val keyStore = ApiKeyConfigStore(context, verifier = fakeVerifier)
+        val inferenceClient = CustomApiInferenceClient(httpClient = mockHttp)
+        val vm = buildTestViewModel(
+            uid = "cuj10_boss",
+            customKeyStore = keyStore,
+            customInferenceClient = inferenceClient
+        )
+
+        composeTestRule.mainClock.autoAdvance = false
+        composeTestRule.setContent {
+            MayaRootApp(viewModel = vm)
+        }
+        composeTestRule.mainClock.advanceTimeBy(150)
+
+        vm.connectApiKey("AIzaSyLiveResponseTestKey1234", ApiProvider.GEMINI)
+        composeTestRule.mainClock.advanceTimeBy(250)
+        assertTrue(vm.apiKeyStatus.value is ApiKeyConnectionStatus.Connected)
+
+        // Send a real chat message through AgentCockpitScreen and verify Maya's AI reply bubble appears!
+        composeTestRule.onNodeWithTag("command_input").performTextInput("Hello Maya")
+        composeTestRule.mainClock.advanceTimeBy(100)
+        composeTestRule.onNodeWithTag("send_command_button").performClick()
+
+        // Wait up to 3s of wall time for Dispatchers.IO mock OkHttp fallback roundtrip & drain Robolectric Main Looper
+        val deadline = System.currentTimeMillis() + 3000L
+        while (System.currentTimeMillis() < deadline &&
+            vm.messages.value.none { it.text.contains("mast chal rahi hai") }
+        ) {
+            Thread.sleep(30)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            composeTestRule.mainClock.advanceTimeBy(100)
+        }
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(200)
+
+        assertTrue(
+            "Expected AI reply in messages, got: ${vm.messages.value.map { "${it.badge}: ${it.text}" }}",
+            vm.messages.value.any { it.text.contains("aapki Gemini API key bilkul mast chal rahi hai") }
+        )
+        composeTestRule.onNodeWithText(
+            "Haan Boss, aapki Gemini API key bilkul mast chal rahi hai!",
+            substring = true
+        ).assertIsDisplayed()
 
         composeTestRule.mainClock.autoAdvance = true
     }

@@ -106,14 +106,18 @@ fun GuardianMemoryScreen(
                 contentPadding = PaddingValues(vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // 0. API Key Connection Card (Gemini / OpenAI / Groq / OpenRouter)
+                // 0. API Key Connection Card (Gemini / OpenAI / Groq / OpenRouter / DeepSeek)
                 item {
                     ApiKeyConnectionCard(
                         status = apiKeyStatus,
                         onConnect = viewModel::connectApiKey,
                         onDisconnect = viewModel::disconnectApiKey,
                         onPasteFromClipboard = viewModel::readClipboardForApiKey,
-                        onOpenGeminiKeyPortal = viewModel::openGeminiApiKeyPortal
+                        onOpenGeminiKeyPortal = viewModel::openGeminiApiKeyPortal,
+                        onTestLiveReply = {
+                            onBackToCockpit()
+                            viewModel.testConnectedApiKey()
+                        }
                     )
                 }
 

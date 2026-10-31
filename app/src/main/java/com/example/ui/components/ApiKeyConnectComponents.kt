@@ -66,6 +66,7 @@ fun ApiKeyConnectDialog(
     onDisconnect: () -> Unit,
     onPasteFromClipboard: () -> String,
     onOpenGeminiKeyPortal: () -> Unit,
+    onTestLiveReply: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     Dialog(
@@ -92,6 +93,7 @@ fun ApiKeyConnectDialog(
                     onDisconnect = onDisconnect,
                     onPasteFromClipboard = onPasteFromClipboard,
                     onOpenGeminiKeyPortal = onOpenGeminiKeyPortal,
+                    onTestLiveReply = onTestLiveReply,
                     onCloseDialog = onDismiss
                 )
             }
@@ -106,6 +108,7 @@ fun ApiKeyConnectionCard(
     onDisconnect: () -> Unit,
     onPasteFromClipboard: () -> String,
     onOpenGeminiKeyPortal: () -> Unit,
+    onTestLiveReply: (() -> Unit)? = null,
     onCloseDialog: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -289,7 +292,7 @@ fun ApiKeyConnectionCard(
                 value = keyInput,
                 onValueChange = { next ->
                     keyInput = next
-                    ApiProvider.detectFromKey(next)?.let { detected ->
+                    ApiProvider.detectFromKey(next, selectedProvider)?.let { detected ->
                         selectedProviderId = detected.id
                     }
                 },
@@ -326,7 +329,7 @@ fun ApiKeyConnectionCard(
                         val clip = onPasteFromClipboard().trim()
                         if (clip.isNotBlank()) {
                             keyInput = clip
-                            ApiProvider.detectFromKey(clip)?.let { detected ->
+                            ApiProvider.detectFromKey(clip, selectedProvider)?.let { detected ->
                                 selectedProviderId = detected.id
                             }
                         }
@@ -415,6 +418,19 @@ fun ApiKeyConnectionCard(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(stringResource(R.string.api_key_disconnect))
                     }
+                }
+            }
+
+            if (connectedInfo != null && onTestLiveReply != null) {
+                OutlinedButton(
+                    onClick = onTestLiveReply,
+                    enabled = !isVerifying,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("api_key_test_reply_button")
+                ) {
+                    Text("Test Live AI Reply")
                 }
             }
         }

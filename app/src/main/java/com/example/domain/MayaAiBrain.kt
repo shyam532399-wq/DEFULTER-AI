@@ -253,42 +253,19 @@ class MayaAiBrain(
 
         try {
             val activeKey = apiKeyStore?.getActiveConfig()
-            val rawJson = withTimeout(60_000L) {
+            withTimeout(60_000L) {
                 if (activeKey != null) {
-                    customInferenceClient.generateStructuredDecisionJson(
+                    customInferenceClient.generateStructuredDecision(
                         config = activeKey,
                         fullPrompt = fullPrompt,
                         actionTypes = supportedActionTypes
                     )
                 } else {
                     val response = agentModel.generateContent(fullPrompt)
-                    response.text ?: throw IllegalStateException("Empty response from Gemini.")
+                    val rawJson = response.text ?: throw IllegalStateException("Empty response from Gemini.")
+                    CustomApiInferenceClient.parseAgentDecisionResilient(rawJson, supportedActionTypes)
                 }
             }
-            val json = CustomApiInferenceClient.extractCleanJsonObject(rawJson)
-            val stepsArray = json.optJSONArray("missionSteps")
-            val steps = if (stepsArray != null) {
-                (0 until stepsArray.length()).mapNotNull { idx ->
-                    stepsArray.optString(idx).takeIf { it.isNotBlank() }
-                }
-            } else emptyList()
-
-            AgentDecision(
-                spokenReply = json.optString("spokenReply", "Ji Boss, dekh rahi hoon."),
-                actionType = json.optString("actionType", "NONE"),
-                target = json.optString("target", ""),
-                recipient = json.optString("recipient", ""),
-                phone = json.optString("phone", ""),
-                subject = json.optString("subject", ""),
-                messageBody = json.optString("messageBody", ""),
-                boardTitle = json.optString("boardTitle", ""),
-                boardCategory = json.optString("boardCategory", "note"),
-                boardContent = json.optString("boardContent", ""),
-                hour = json.optInt("hour", 7),
-                minute = json.optInt("minute", 0),
-                numberVal = json.optInt("numberVal", 50),
-                missionSteps = steps
-            )
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Gemini command timed out", e)
             throw IllegalStateException("Boss, response me 60s se zyada lag gaye. Ek baar dobara try karun?")

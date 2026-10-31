@@ -279,6 +279,11 @@ class MayaViewModel(
         )
     }
 
+    fun testConnectedApiKey() {
+        _showApiKeyDialog.value = false
+        sendCommand("Maya, ek chhoti line me confirm karo ki meri API key live kaam kar rahi hai.")
+    }
+
     fun toggleVoiceReply() {
         val next = !_voiceReplyEnabled.value
         _voiceReplyEnabled.value = next
@@ -414,44 +419,57 @@ class MayaViewModel(
 
         viewModelScope.launch {
             _isThinking.value = true
-            refreshTelemetry()
-            val prof = currentProfile()
-            val persona = MayaPersona.fromId(prof.persona)
-            val tone = MayaTone.fromId(prof.tone)
-            val listenMode = ListenMode.fromId(prof.listenMode)
-            val memories = (memoriesState.value as? DataUiState.Success)?.data.orEmpty()
-            val skills = (skillsState.value as? DataUiState.Success)?.data.orEmpty()
-            val recent = _messages.value.takeLast(8).map {
-                (if (it.isFromBoss) prof.bossName else persona.displayName) to it.text
-            }
-            val latestHud = systemHudMonitor.readSnapshot()
-
-            val decisionRes = aiBrain.processBossCommand(
-                userInput = trimmed,
-                bossName = prof.bossName,
-                persona = persona,
-                tone = tone,
-                listenMode = listenMode,
-                personalWiki = prof.personalWiki,
-                memories = memories,
-                skills = skills,
-                telemetry = _telemetry.value,
-                autopilotConnected = autopilotConnected.value,
-                recentTranscript = recent,
-                hudSnapshot = latestHud
-            )
-
-            _isThinking.value = false
-            decisionRes.fold(
-                onSuccess = { decision -> executeAgentDecision(decision, memories) },
-                onFailure = { err ->
-                    appendMayaBubble(
-                        err.localizedMessage ?: "AI call fail hua, Boss.",
-                        badge = "AI Error",
-                        isError = true
-                    )
+            try {
+                refreshTelemetry()
+                val prof = currentProfile()
+                val persona = MayaPersona.fromId(prof.persona)
+                val tone = MayaTone.fromId(prof.tone)
+                val listenMode = ListenMode.fromId(prof.listenMode)
+                val memories = (memoriesState.value as? DataUiState.Success)?.data.orEmpty()
+                val skills = (skillsState.value as? DataUiState.Success)?.data.orEmpty()
+                val recent = _messages.value.takeLast(8).map {
+                    (if (it.isFromBoss) prof.bossName else persona.displayName) to it.text
                 }
-            )
+                val latestHud = systemHudMonitor.readSnapshot()
+
+                val decisionRes = aiBrain.processBossCommand(
+                    userInput = trimmed,
+                    bossName = prof.bossName,
+                    persona = persona,
+                    tone = tone,
+                    listenMode = listenMode,
+                    personalWiki = prof.personalWiki,
+                    memories = memories,
+                    skills = skills,
+                    telemetry = _telemetry.value,
+                    autopilotConnected = autopilotConnected.value,
+                    recentTranscript = recent,
+                    hudSnapshot = latestHud
+                )
+
+                _isThinking.value = false
+                decisionRes.fold(
+                    onSuccess = { decision -> executeAgentDecision(decision, memories) },
+                    onFailure = { err ->
+                        appendMayaBubble(
+                            err.localizedMessage ?: "AI call fail hua, Boss.",
+                            badge = "AI Error",
+                            isError = true
+                        )
+                    }
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error in sendCommand", e)
+                appendMayaBubble(
+                    e.localizedMessage ?: "Response generate karne me error aaya, Boss.",
+                    badge = "AI Error",
+                    isError = true
+                )
+            } finally {
+                _isThinking.value = false
+            }
         }
     }
 
@@ -1472,13 +1490,17 @@ class MayaViewModel(
             isError = isError
         )
         if (speakOut) {
-            val prof = currentProfile()
-            voiceEngine.speak(
-                text = text,
-                persona = MayaPersona.fromId(prof.persona),
-                tone = MayaTone.fromId(prof.tone),
-                voiceEnabled = _voiceReplyEnabled.value
-            )
+            runCatching {
+                val prof = currentProfile()
+                voiceEngine.speak(
+                    text = text,
+                    persona = MayaPersona.fromId(prof.persona),
+                    tone = MayaTone.fromId(prof.tone),
+                    voiceEnabled = _voiceReplyEnabled.value
+                )
+            }.onFailure { e ->
+                Log.w(TAG, "TTS speak failed", e)
+            }
         }
     }
 

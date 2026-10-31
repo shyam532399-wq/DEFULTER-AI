@@ -20,6 +20,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -38,6 +39,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.Undo
@@ -83,9 +86,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.R
@@ -131,6 +137,8 @@ fun AgentCockpitScreen(
     showApiKeyDialog: Boolean = false
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val accent = LocalPersonaAccent.current
     val listState = rememberLazyListState()
     var inputText by rememberSaveable { mutableStateOf("") }
@@ -141,9 +149,11 @@ fun AgentCockpitScreen(
     val activeTone = MayaTone.fromId(profile.tone)
     val activeListenMode = ListenMode.fromId(profile.listenMode)
 
-    LaunchedEffect(messages.size, pendingConfirmation) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.lastIndex)
+    // Scroll to the true bottom item (QuickChips at index 0 + messages + optional thinking indicator)
+    LaunchedEffect(messages.size, isThinking, partialTranscript.isNotBlank(), pendingConfirmation) {
+        val lastItemIndex = messages.size + (if (isThinking || partialTranscript.isNotBlank()) 1 else 0)
+        if (lastItemIndex >= 0) {
+            runCatching { listState.animateScrollToItem(lastItemIndex) }
         }
     }
 
@@ -193,12 +203,14 @@ fun AgentCockpitScreen(
         }
     }
 
-    Column(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+        contentAlignment = Alignment.TopCenter
     ) {
+        val compactViewport = maxHeight < 560.dp
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -213,6 +225,7 @@ fun AgentCockpitScreen(
                 isListening = isListening,
                 isThinking = isThinking,
                 isSpeaking = isSpeaking,
+                compactViewport = compactViewport,
                 guardArmed = profile.guardArmed || profile.touchGuardArmed,
                 voiceReplyEnabled = voiceReplyEnabled,
                 wakeWordEnabled = wakeWordEnabled,
@@ -266,6 +279,7 @@ fun AgentCockpitScreen(
                     onDisconnect = viewModel::disconnectApiKey,
                     onPasteFromClipboard = viewModel::readClipboardForApiKey,
                     onOpenGeminiKeyPortal = viewModel::openGeminiApiKeyPortal,
+                    onTestLiveReply = viewModel::testConnectedApiKey,
                     onDismiss = viewModel::dismissApiKeyDialog
                 )
             }
@@ -407,6 +421,18 @@ fun AgentCockpitScreen(
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                             },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(
+                                onSend = {
+                                    val toSend = inputText.trim()
+                                    if (toSend.isNotBlank()) {
+                                        inputText = ""
+                                        keyboardController?.hide()
+                                        focusManager.clearFocus()
+                                        viewModel.sendCommand(toSend)
+                                    }
+                                }
+                            ),
                             maxLines = 3,
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
@@ -447,6 +473,8 @@ fun AgentCockpitScreen(
                                 onClick = {
                                     val toSend = inputText
                                     inputText = ""
+                                    keyboardController?.hide()
+                                    focusManager.clearFocus()
                                     viewModel.sendCommand(toSend)
                                 },
                                 modifier = Modifier
@@ -478,6 +506,7 @@ private fun PersonaCockpitHeader(
     isListening: Boolean,
     isThinking: Boolean,
     isSpeaking: Boolean,
+    compactViewport: Boolean,
     guardArmed: Boolean,
     voiceReplyEnabled: Boolean,
     wakeWordEnabled: Boolean,
@@ -608,7 +637,7 @@ private fun PersonaCockpitHeader(
             }
 
             // Expandable HunterisLive-1/maya-ui Centerpiece Orb + Neon Spectrum + System Telemetry HUD
-            AnimatedVisibility(visible = hudConfig.hudExpanded) {
+            AnimatedVisibility(visible = hudConfig.hudExpanded && !compactViewport) {
                 Column(modifier = Modifier.padding(top = 10.dp)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
