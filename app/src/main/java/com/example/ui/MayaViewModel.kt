@@ -21,6 +21,7 @@ import com.example.domain.AgentDecision
 import com.example.domain.ApiKeyConfigStore
 import com.example.domain.ApiKeyConnectionStatus
 import com.example.domain.ApiProvider
+import com.example.domain.BrainLoopPhase
 import com.example.domain.DeviceTelemetry
 import com.example.domain.GitHubRemoteSkill
 import com.example.domain.GitHubSkillStoreClient
@@ -30,6 +31,8 @@ import com.example.domain.LiveInfoClient
 import com.example.domain.LiveInfoResult
 import com.example.domain.MayaAccessibilityService
 import com.example.domain.MayaAiBrain
+import com.example.domain.MayaBrainBus
+import com.example.domain.MayaPermanentBrainService
 import com.example.domain.MayaVoiceEngine
 import com.example.domain.PhoneActionExecutor
 import com.example.domain.SystemHudMonitor
@@ -211,15 +214,50 @@ class MayaViewModel(
     private val _showApiKeyDialog = MutableStateFlow(false)
     val showApiKeyDialog: StateFlow<Boolean> = _showApiKeyDialog.asStateFlow()
 
+    private val _needsBrainMicPermissionEvent = MutableStateFlow(false)
+    val needsBrainMicPermissionEvent: StateFlow<Boolean> = _needsBrainMicPermissionEvent.asStateFlow()
+
     val isListening: StateFlow<Boolean> = voiceEngine.isListening
     val isSpeaking: StateFlow<Boolean> = voiceEngine.isSpeaking
     val partialTranscript: StateFlow<String> = voiceEngine.partialTranscript
     val wakeWordEnabled: StateFlow<Boolean> = voiceEngine.wakeWordModeEnabled
+    val permanentBrainEnabled: StateFlow<Boolean> = voiceEngine.permanentBrainEnabled
+    val permanentBrainPaused: StateFlow<Boolean> = voiceEngine.permanentBrainPaused
+    val brainLoopPhase: StateFlow<BrainLoopPhase> = voiceEngine.brainLoopPhase
     val audioLevel: StateFlow<Float> = voiceEngine.audioLevel
     val spectrumBands: StateFlow<List<Float>> = voiceEngine.spectrumBands
     val autopilotConnected: StateFlow<Boolean> = MayaAccessibilityService.isConnected
 
+    private val uiBrainTranscriptHandler: (String) -> Unit = { spoken ->
+        handleVoiceTranscript(spoken)
+    }
+
     init {
+        MayaBrainBus.attachUiDelegate(
+            onTranscript = uiBrainTranscriptHandler,
+            onStoppedFromNotification = {
+                appendMayaBubble(
+                    "Notification se Permanent Background Listening band kar diya gaya, ${currentProfile().bossName}.",
+                    badge = "Brain Mode OFF",
+                    speakOut = false
+                )
+            },
+            onBackgroundTurn = { turn ->
+                _messages.value = _messages.value + listOf(
+                    ChatBubble(isFromBoss = true, text = turn.bossSpeech),
+                    ChatBubble(isFromBoss = false, text = turn.mayaReply, badge = turn.badge)
+                )
+            }
+        )
+        if (voiceEngine.permanentBrainEnabled.value) {
+            _voiceReplyEnabled.value = true
+            voiceEngine.bindBrainCallbacks(
+                onTranscript = uiBrainTranscriptHandler,
+                onError = { errMsg ->
+                    appendMayaBubble(errMsg, badge = "Brain Mic", isError = false, speakOut = false)
+                }
+            )
+        }
         viewModelScope.launch {
             repository.ensureDefaultProfile(currentUserId, initialDisplayName)
             refreshTelemetry()
@@ -290,6 +328,82 @@ class MayaViewModel(
         if (!next) voiceEngine.stopSpeaking()
     }
 
+    fun clearBrainPermissionRequest() {
+        _needsBrainMicPermissionEvent.value = false
+    }
+
+    fun setPermanentBrainMode(
+        enabled: Boolean,
+        hasAudioPermission: Boolean = MayaPermanentBrainService.hasRecordAudioPermission(phoneExecutor.appContext),
+        onNeedPermission: (() -> Unit)? = null
+    ) {
+        if (enabled) {
+            if (!hasAudioPermission) {
+                if (onNeedPermission != null) {
+                    onNeedPermission()
+                } else {
+                    _needsBrainMicPermissionEvent.value = true
+                    appendMayaBubble(
+                        "Boss, Permanent Background Listening chalu karne ke liye Mic permission Allow kar dijiye.",
+                        badge = "Mic Permission Needed",
+                        speakOut = false
+                    )
+                }
+                return
+            }
+            _needsBrainMicPermissionEvent.value = false
+            _voiceReplyEnabled.value = true
+            voiceEngine.setPermanentBrainLoop(
+                enabled = true,
+                onTranscript = uiBrainTranscriptHandler,
+                onError = { errMsg ->
+                    appendMayaBubble(errMsg, badge = "Brain Mic", isError = false, speakOut = false)
+                }
+            )
+            MayaPermanentBrainService.start(phoneExecutor.appContext)
+            appendMayaBubble(
+                "Human Brain Permanent Listening chalu ho gaya hai, ${currentProfile().bossName}! Ab aap app minimize bhi kar dein to main background me hamesha sunungi aur insaan ki tarah turant bolkar jawab dungi.",
+                badge = "Brain LIVE • Background"
+            )
+        } else {
+            _needsBrainMicPermissionEvent.value = false
+            voiceEngine.setPermanentBrainLoop(false)
+            MayaPermanentBrainService.stop(phoneExecutor.appContext)
+            appendMayaBubble(
+                "Permanent background listening band kar diya hai, ${currentProfile().bossName}.",
+                badge = "Brain Mode OFF"
+            )
+        }
+    }
+
+    fun togglePermanentBrainMode(
+        hasAudioPermission: Boolean = MayaPermanentBrainService.hasRecordAudioPermission(phoneExecutor.appContext),
+        onNeedPermission: (() -> Unit)? = null
+    ) {
+        setPermanentBrainMode(
+            enabled = !permanentBrainEnabled.value,
+            hasAudioPermission = hasAudioPermission,
+            onNeedPermission = onNeedPermission
+        )
+    }
+
+    fun togglePermanentBrainPause() {
+        if (!permanentBrainEnabled.value) return
+        val nextPaused = !permanentBrainPaused.value
+        voiceEngine.setPermanentBrainPaused(nextPaused)
+        if (MayaBrainBus.serviceRunning.value) {
+            MayaPermanentBrainService.togglePause(phoneExecutor.appContext)
+        }
+    }
+
+    fun simulatePermanentBrainSpeechForTest(spokenText: String) {
+        voiceEngine.deliverTranscriptForTest(spokenText)
+    }
+
+    internal fun finishSpeakingForTest() {
+        voiceEngine.finishSpeakingForTest()
+    }
+
     fun toggleWakeWordMode(hasAudioPermission: Boolean, onNeedPermission: () -> Unit) {
         if (!hasAudioPermission) {
             onNeedPermission()
@@ -312,7 +426,11 @@ class MayaViewModel(
     }
 
     fun stopVoiceInput() {
-        voiceEngine.stopListening()
+        if (permanentBrainEnabled.value) {
+            voiceEngine.setPermanentBrainPaused(true)
+        } else {
+            voiceEngine.stopListening()
+        }
     }
 
     private fun handleVoiceTranscript(transcript: String) {
@@ -397,7 +515,61 @@ class MayaViewModel(
             return
         }
 
-        // 5. Instant API Key Connect & Status shortcuts
+        // 5. Instant Permanent Human-Brain Listening voice & text shortcuts
+        if (lowerCmd in setOf(
+                "permanent listening on",
+                "permanent listening on karo",
+                "permanent listening chalu karo",
+                "permanent listening start karo",
+                "always listen",
+                "always listen on",
+                "background me suno",
+                "hamesha suno",
+                "human brain mode",
+                "human brain mode on",
+                "brain mode on",
+                "brain mode on karo",
+                "brain mode chalu karo"
+            )
+        ) {
+            setPermanentBrainMode(enabled = true)
+            return
+        }
+        if (lowerCmd in setOf(
+                "permanent listening off",
+                "permanent listening band",
+                "permanent listening band karo",
+                "background listening off",
+                "background listening band",
+                "background listening band karo",
+                "human brain mode off",
+                "brain mode off",
+                "brain mode band karo"
+            )
+        ) {
+            setPermanentBrainMode(enabled = false)
+            return
+        }
+        if (lowerCmd in setOf("pause listening", "brain pause", "brain pause karo", "thodi der mat suno")) {
+            if (permanentBrainEnabled.value) {
+                voiceEngine.setPermanentBrainPaused(true)
+                appendMayaBubble("Permanent listening pause kar diya hai, ${currentProfile().bossName}.", badge = "Brain Paused", speakOut = false)
+            } else {
+                stopVoiceInput()
+            }
+            return
+        }
+        if (lowerCmd in setOf("resume listening", "brain resume", "brain resume karo", "wapas suno")) {
+            if (permanentBrainEnabled.value) {
+                voiceEngine.setPermanentBrainPaused(false)
+                appendMayaBubble("Wapas sun rahi hoon, ${currentProfile().bossName}.", badge = "Brain LIVE")
+            } else {
+                setPermanentBrainMode(enabled = true)
+            }
+            return
+        }
+
+        // 6. Instant API Key Connect & Status shortcuts
         if (lowerCmd in setOf("api key", "api key connect", "api key connect karo", "connect api key", "api key dalo", "api key set karo", "api connect karo")) {
             _showApiKeyDialog.value = true
             appendMayaBubble(
@@ -419,6 +591,7 @@ class MayaViewModel(
 
         viewModelScope.launch {
             _isThinking.value = true
+            voiceEngine.notifyThinkingStarted()
             try {
                 refreshTelemetry()
                 val prof = currentProfile()
@@ -943,6 +1116,32 @@ class MayaViewModel(
                 val mode = ListenMode.fromId(decision.target)
                 setListenMode(mode)
                 appendMayaBubble(decision.spokenReply, badge = mode.label)
+            }
+
+            "SET_PERMANENT_LISTEN" -> {
+                val targetCmd = decision.target.trim().lowercase(Locale.ROOT)
+                when {
+                    targetCmd in setOf("off", "stop", "false", "disable", "band") -> {
+                        setPermanentBrainMode(enabled = false)
+                    }
+                    targetCmd == "pause" -> {
+                        if (permanentBrainEnabled.value) {
+                            voiceEngine.setPermanentBrainPaused(true)
+                        }
+                        appendMayaBubble(decision.spokenReply, badge = "Brain Paused", speakOut = false)
+                    }
+                    targetCmd == "resume" -> {
+                        if (permanentBrainEnabled.value) {
+                            voiceEngine.setPermanentBrainPaused(false)
+                            appendMayaBubble(decision.spokenReply, badge = "Brain LIVE")
+                        } else {
+                            setPermanentBrainMode(enabled = true)
+                        }
+                    }
+                    else -> {
+                        setPermanentBrainMode(enabled = true)
+                    }
+                }
             }
 
             "ARM_GUARD" -> {
@@ -1489,10 +1688,11 @@ class MayaViewModel(
             attachedBitmap = attachedBitmap,
             isError = isError
         )
+        var spokeViaTts = false
         if (speakOut) {
             runCatching {
                 val prof = currentProfile()
-                voiceEngine.speak(
+                spokeViaTts = voiceEngine.speak(
                     text = text,
                     persona = MayaPersona.fromId(prof.persona),
                     tone = MayaTone.fromId(prof.tone),
@@ -1502,11 +1702,17 @@ class MayaViewModel(
                 Log.w(TAG, "TTS speak failed", e)
             }
         }
+        if (!spokeViaTts) {
+            voiceEngine.notifyTurnCompletedWithoutSpeech()
+        }
     }
 
     override fun onCleared() {
         super.onCleared()
-        voiceEngine.shutdown()
+        MayaBrainBus.detachUiDelegate(uiBrainTranscriptHandler)
+        if (voiceEngine !== MayaVoiceEngine.peekSharedInstance()) {
+            voiceEngine.shutdown()
+        }
     }
 
     companion object {
@@ -1523,7 +1729,7 @@ class MayaViewModel(
                     MayaViewModel(
                         repository = MayaRepository(app, currentUserId),
                         phoneExecutor = PhoneActionExecutor(app),
-                        voiceEngine = MayaVoiceEngine(app),
+                        voiceEngine = MayaVoiceEngine.getSharedInstance(app),
                         aiBrain = MayaAiBrain(apiKeyStore = keyStore),
                         liveInfoClient = LiveInfoClient(),
                         currentUserId = currentUserId,

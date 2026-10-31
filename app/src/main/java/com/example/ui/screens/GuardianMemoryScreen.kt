@@ -1,6 +1,11 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +30,9 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Shield
@@ -50,9 +58,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.R
 import com.example.data.model.DataUiState
 import com.example.data.model.MemoryItem
 import com.example.data.model.ReminderItem
@@ -72,8 +84,23 @@ fun GuardianMemoryScreen(
 ) {
     BackHandler { onBackToCockpit() }
 
+    val context = LocalContext.current
     val accent = LocalPersonaAccent.current
     val apiKeyStatus by viewModel.apiKeyStatus.collectAsStateWithLifecycle()
+    val permanentBrainEnabled by viewModel.permanentBrainEnabled.collectAsStateWithLifecycle()
+    val permanentBrainPaused by viewModel.permanentBrainPaused.collectAsStateWithLifecycle()
+    val brainLoopPhase by viewModel.brainLoopPhase.collectAsStateWithLifecycle()
+
+    val guardianBrainPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grantMap ->
+        val micGranted = grantMap[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (micGranted) {
+            viewModel.setPermanentBrainMode(enabled = true, hasAudioPermission = true)
+        }
+    }
+
     var bossNameDraft by remember(profile.bossName) { mutableStateOf(profile.bossName) }
     var wikiDraft by remember(profile.personalWiki) { mutableStateOf(profile.personalWiki) }
     var passphraseDraft by remember(profile.voicePassphrase) { mutableStateOf(profile.voicePassphrase) }
@@ -119,6 +146,121 @@ fun GuardianMemoryScreen(
                             viewModel.testConnectedApiKey()
                         }
                     )
+                }
+
+                // 0.5 Human Brain — Permanent Background Listener Card
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        shape = RoundedCornerShape(22.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("permanent_brain_card")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Psychology,
+                                        contentDescription = null,
+                                        tint = accent.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = stringResource(R.string.brain_card_title),
+                                        style = MaterialTheme.typography.titleLarge
+                                    )
+                                }
+                                Switch(
+                                    checked = permanentBrainEnabled,
+                                    onCheckedChange = { wantOn ->
+                                        if (wantOn) {
+                                            val hasAudio = ContextCompat.checkSelfPermission(
+                                                context,
+                                                Manifest.permission.RECORD_AUDIO
+                                            ) == PackageManager.PERMISSION_GRANTED
+                                            viewModel.setPermanentBrainMode(
+                                                enabled = true,
+                                                hasAudioPermission = hasAudio,
+                                                onNeedPermission = {
+                                                    val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                                        arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
+                                                    } else {
+                                                        arrayOf(Manifest.permission.RECORD_AUDIO)
+                                                    }
+                                                    guardianBrainPermissionLauncher.launch(perms)
+                                                }
+                                            )
+                                        } else {
+                                            viewModel.setPermanentBrainMode(enabled = false)
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("permanent_brain_switch")
+                                )
+                            }
+
+                            Text(
+                                text = stringResource(R.string.brain_card_subtitle),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            Surface(
+                                color = if (permanentBrainEnabled) accent.primary.copy(alpha = 0.14f)
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = if (permanentBrainEnabled) {
+                                            "Status: ${brainLoopPhase.statusHinglish}"
+                                        } else {
+                                            "Status: Off — Switch chalu karke background listening on karein"
+                                        },
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = if (permanentBrainEnabled) accent.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (permanentBrainEnabled) {
+                                        OutlinedButton(
+                                            onClick = viewModel::togglePermanentBrainPause,
+                                            modifier = Modifier
+                                                .heightIn(min = 48.dp)
+                                                .testTag("guardian_brain_pause_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = if (permanentBrainPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                stringResource(
+                                                    if (permanentBrainPaused) R.string.brain_action_resume
+                                                    else R.string.brain_action_pause
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // 1. Voice Guardian & Touch Guard Security Card (Section 3.13)

@@ -1,5 +1,7 @@
 package com.example
 
+import android.Manifest
+import android.app.Application
 import android.content.Context
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,11 +26,15 @@ import com.example.domain.ApiKeyConfigStore
 import com.example.domain.ApiKeyConnectionStatus
 import com.example.domain.ApiKeyVerificationResult
 import com.example.domain.ApiProvider
+import com.example.domain.BackgroundBrainTurn
+import com.example.domain.BrainLoopPhase
 import com.example.domain.CustomApiInferenceClient
 import com.example.domain.GitHubSkillStoreClient
 import com.example.domain.HudEffectTheme
 import com.example.domain.LiveInfoClient
 import com.example.domain.MayaAiBrain
+import com.example.domain.MayaBrainBus
+import com.example.domain.MayaPermanentBrainService
 import com.example.domain.MayaVoiceEngine
 import com.example.domain.PhoneActionExecutor
 import com.example.domain.SystemHudMonitor
@@ -76,11 +82,15 @@ class MayaCriticalUserJourneyTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         context.getSharedPreferences("maya_hud_prefs", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences("maya_api_key_vault", Context.MODE_PRIVATE).edit().clear().commit()
+        MayaBrainBus.drainBackgroundTurns()
+        MayaBrainBus.setServiceRunning(false)
         database = MayaDatabase.createInMemory(context)
     }
 
     @After
     fun tearDown() {
+        MayaBrainBus.drainBackgroundTurns()
+        MayaBrainBus.setServiceRunning(false)
         database.close()
     }
 
@@ -676,6 +686,138 @@ class MayaCriticalUserJourneyTest {
             "Haan Boss, aapki Gemini API key bilkul mast chal rahi hai!",
             substring = true
         ).assertIsDisplayed()
+
+        composeTestRule.mainClock.autoAdvance = true
+    }
+
+    @Test
+    fun cuj11_permanentBrainMode_startsForegroundService_repliesWithoutWakeWord_andAutoResumesListening() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.POST_NOTIFICATIONS
+        )
+        // Clear any leftover started service intents
+        while (org.robolectric.Shadows.shadowOf(app).nextStartedService != null) {
+            // drain queue
+        }
+
+        val brainReplyJson = """
+            {
+              "candidates": [{
+                "content": {
+                  "parts": [
+                    { "text": "{\"spokenReply\":\"Bilkul Boss, main background me bhi hamesha sun rahi hoon aur saath soch rahi hoon!\",\"actionType\":\"NONE\"}" }
+                  ]
+                }
+              }]
+            }
+        """.trimIndent()
+
+        val mockHttp = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(brainReplyJson.toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val fakeVerifier = com.example.domain.ApiKeyVerifier { _, _, _, _ ->
+            Result.success(ApiKeyVerificationResult(resolvedModel = "gemini-2.5-flash"))
+        }
+        val keyStore = ApiKeyConfigStore(app, verifier = fakeVerifier)
+        val inferenceClient = CustomApiInferenceClient(httpClient = mockHttp)
+        val vm = buildTestViewModel(
+            uid = "cuj11_boss",
+            customKeyStore = keyStore,
+            customInferenceClient = inferenceClient
+        )
+
+        composeTestRule.mainClock.autoAdvance = false
+        composeTestRule.setContent {
+            MayaRootApp(viewModel = vm)
+        }
+        composeTestRule.mainClock.advanceTimeBy(150)
+
+        vm.connectApiKey("AIzaSyHumanBrainModeTestKey999", ApiProvider.GEMINI)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(200)
+
+        // 1. Tap Permanent Brain chip in Cockpit header -> starts Foreground Service + forces Voice Reply ON
+        composeTestRule.onNodeWithTag("permanent_brain_chip").assertIsDisplayed().performClick()
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(200)
+
+        assertTrue(vm.permanentBrainEnabled.value)
+        assertTrue(vm.voiceReplyEnabled.value)
+        composeTestRule.onNodeWithTag("permanent_brain_banner").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("permanent_brain_pause_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("permanent_brain_stop_button").assertIsDisplayed()
+
+        val startedIntent = org.robolectric.Shadows.shadowOf(app).nextStartedService
+        assertNotNull("Expected MayaPermanentBrainService to be started", startedIntent)
+        assertEquals(MayaPermanentBrainService::class.java.name, startedIntent.component?.className)
+        assertEquals(MayaPermanentBrainService.ACTION_START_BRAIN, startedIntent.action)
+
+        // 2. Simulate natural human speech WITHOUT wake word ("Hey Maya") -> AI replies and auto-resumes listening
+        vm.simulatePermanentBrainSpeechForTest("Aaj ka plan kya hai, sun rahi ho na?")
+
+        val deadline = System.currentTimeMillis() + 3000L
+        while (System.currentTimeMillis() < deadline &&
+            vm.messages.value.none { it.text.contains("hamesha sun rahi hoon aur saath soch rahi hoon") }
+        ) {
+            Thread.sleep(30)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            composeTestRule.mainClock.advanceTimeBy(100)
+        }
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(150)
+
+        assertTrue(
+            "Expected conversational AI reply without wake word, got: ${vm.messages.value.map { it.text }}",
+            vm.messages.value.any { it.text.contains("hamesha sun rahi hoon aur saath soch rahi hoon") }
+        )
+
+        // Verify Self-Echo Guard: while Maya is speaking via TTS, phase is SPEAKING and mic is paused
+        if (vm.isSpeaking.value) {
+            assertEquals(BrainLoopPhase.SPEAKING, vm.brainLoopPhase.value)
+            assertFalse("Mic must stay paused while Maya speaks to prevent self-echo", vm.isListening.value)
+            vm.finishSpeakingForTest()
+        }
+
+        // Allow 380ms post-speech acoustic tail guard to reopen continuous listening
+        Thread.sleep(430)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(200)
+        assertEquals(BrainLoopPhase.LISTENING, vm.brainLoopPhase.value)
+
+        // 3. Verify background turn sync from MayaBrainBus when app was minimized/headless
+        MayaBrainBus.enqueueBackgroundTurn(
+            BackgroundBrainTurn(
+                bossSpeech = "Background me torch check karo",
+                mayaReply = "Haan Boss, background se jawab de diya hai."
+            )
+        )
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(150)
+        assertTrue(vm.messages.value.any { it.text == "Haan Boss, background se jawab de diya hai." })
+
+        // 4. Pause and Stop controls cleanly transition state
+        composeTestRule.onNodeWithTag("permanent_brain_pause_button").performClick()
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(150)
+        assertTrue(vm.permanentBrainPaused.value)
+        assertEquals(BrainLoopPhase.PAUSED, vm.brainLoopPhase.value)
+
+        composeTestRule.onNodeWithTag("permanent_brain_stop_button").performClick()
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(150)
+        assertFalse(vm.permanentBrainEnabled.value)
+        assertEquals(BrainLoopPhase.OFF, vm.brainLoopPhase.value)
 
         composeTestRule.mainClock.autoAdvance = true
     }

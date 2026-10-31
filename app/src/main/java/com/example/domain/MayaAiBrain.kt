@@ -107,6 +107,7 @@ class MayaAiBrain(
         "DELETE_SKILL",
         "SWITCH_PERSONA",
         "SET_LISTEN_MODE",
+        "SET_PERMANENT_LISTEN",
         "GENERATE_IMAGE",
         "ARM_GUARD",
         "DISARM_GUARD",
@@ -213,7 +214,9 @@ class MayaAiBrain(
             Current Tone/Mood: ${tone.label}. Listen Mode: ${listenMode.label}.
             Live Phone Status: Battery=${telemetry.batteryPercent}% (charging=${telemetry.isCharging}), Torch=${telemetry.torchEnabled}, Volume=${telemetry.mediaVolumePercent}%, Ringer=${telemetry.ringerModeLabel}, ScreenAutopilotEnabled=$autopilotConnected.
             Live Maya AI HUD Telemetry: CPU=${hudSnapshot.cpuLoadPercent}% (${hudSnapshot.cpuPeakMhz}MHz), RAM=${String.format(java.util.Locale.US, "%.1f/%.1fGB", hudSnapshot.ramUsedGb, hudSnapshot.ramTotalGb)} (${hudSnapshot.ramUsedPercent}%), Temp=${String.format(java.util.Locale.US, "%.1fC", hudSnapshot.temperatureCelsius)} (${hudSnapshot.thermalStatusLabel}), NetDown=${SystemHudMonitor.formatNetRate(hudSnapshot.netDownloadKbps)}, NetUp=${SystemHudMonitor.formatNetRate(hudSnapshot.netUploadKbps)}, FPS=${hudSnapshot.uiFps}.
-            MAYA HUD & GITHUB SKILL STORE ACTIONS:
+            MAYA HUD, PERMANENT HUMAN-BRAIN LISTENING & GITHUB SKILL STORE ACTIONS:
+            - When Boss asks to turn ON/OFF/Pause/Resume permanent listening, background listening, always-on listening, or Human Brain mode -> use actionType="SET_PERMANENT_LISTEN" with target in ["on", "off", "pause", "resume"].
+            - Conversational Human Brain Flow: Remember context from Recent Conversation naturally like a real human brain — give direct, lively, empathetic Hinglish replies without repeating robotic greetings every turn.
             - When Boss asks for CPU, RAM, temperature, network speed, FPS, or system performance -> use actionType="GET_SYSTEM_HUD" (set target="board" if Boss wants full diagnostic saved to Board).
             - When Boss asks to toggle HUD, Floating HUD, Quantum grid, or Holographic mode -> use actionType="CONTROL_HUD" with target in ["hud_expand", "hud_collapse", "float_on", "float_off", "quantum", "holographic", "minimal"].
             - When Boss asks to import/sync skills from GitHub (e.g. HunterisLive-1/maya-ui or HunterisLive-1/mobile-maya-skills) -> use actionType="SYNC_GITHUB_SKILLS" with target="<owner/repo or URL>".

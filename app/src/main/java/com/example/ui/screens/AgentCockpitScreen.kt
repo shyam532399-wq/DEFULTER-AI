@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -54,8 +55,11 @@ import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -94,12 +98,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.model.ListenMode
 import com.example.data.model.MayaPersona
 import com.example.data.model.MayaTone
 import com.example.data.model.UserProfile
 import com.example.domain.ApiKeyConnectionStatus
+import com.example.domain.BrainLoopPhase
 import com.example.domain.HudEffectTheme
 import com.example.domain.HudVisualConfig
 import com.example.domain.SystemHudSnapshot
@@ -134,7 +140,10 @@ fun AgentCockpitScreen(
     audioLevel: Float = 0f,
     spectrumBands: List<Float> = List(24) { 0.08f },
     apiKeyStatus: ApiKeyConnectionStatus = ApiKeyConnectionStatus.BuiltIn,
-    showApiKeyDialog: Boolean = false
+    showApiKeyDialog: Boolean = false,
+    permanentBrainEnabled: Boolean = false,
+    permanentBrainPaused: Boolean = false,
+    brainLoopPhase: BrainLoopPhase = BrainLoopPhase.OFF
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -142,6 +151,7 @@ fun AgentCockpitScreen(
     val accent = LocalPersonaAccent.current
     val listState = rememberLazyListState()
     var inputText by rememberSaveable { mutableStateOf("") }
+    val needsBrainPermission by viewModel.needsBrainMicPermissionEvent.collectAsStateWithLifecycle()
 
     RememberLiveFpsReporter(onFpsMeasured = viewModel::reportLiveFps)
 
@@ -163,6 +173,32 @@ fun AgentCockpitScreen(
     ) { granted ->
         if (granted) {
             viewModel.startVoiceInput()
+        }
+    }
+
+    val permanentBrainPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grantMap ->
+        val micGranted = grantMap[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (micGranted) {
+            viewModel.setPermanentBrainMode(enabled = true, hasAudioPermission = true)
+        }
+    }
+
+    fun requestPermissionsForPermanentBrain() {
+        val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            arrayOf(Manifest.permission.RECORD_AUDIO)
+        }
+        permanentBrainPermissionLauncher.launch(perms)
+    }
+
+    LaunchedEffect(needsBrainPermission) {
+        if (needsBrainPermission) {
+            viewModel.clearBrainPermissionRequest()
+            requestPermissionsForPermanentBrain()
         }
     }
 
@@ -229,6 +265,9 @@ fun AgentCockpitScreen(
                 guardArmed = profile.guardArmed || profile.touchGuardArmed,
                 voiceReplyEnabled = voiceReplyEnabled,
                 wakeWordEnabled = wakeWordEnabled,
+                permanentBrainEnabled = permanentBrainEnabled,
+                permanentBrainPaused = permanentBrainPaused,
+                brainLoopPhase = brainLoopPhase,
                 hudSnapshot = hudSnapshot,
                 hudConfig = hudConfig,
                 audioLevel = audioLevel,
@@ -250,6 +289,18 @@ fun AgentCockpitScreen(
                         onNeedPermission = { audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
                     )
                 },
+                onTogglePermanentBrain = {
+                    val hasAudio = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    viewModel.togglePermanentBrainMode(
+                        hasAudioPermission = hasAudio,
+                        onNeedPermission = { requestPermissionsForPermanentBrain() }
+                    )
+                },
+                onTogglePermanentBrainPause = viewModel::togglePermanentBrainPause,
+                onStopPermanentBrain = { viewModel.setPermanentBrainMode(enabled = false) },
                 onToggleHudExpanded = viewModel::toggleHudExpanded,
                 onSelectHudTheme = viewModel::setHudEffectTheme,
                 onToggleFloatingHud = viewModel::toggleFloatingHud,
@@ -510,6 +561,9 @@ private fun PersonaCockpitHeader(
     guardArmed: Boolean,
     voiceReplyEnabled: Boolean,
     wakeWordEnabled: Boolean,
+    permanentBrainEnabled: Boolean,
+    permanentBrainPaused: Boolean,
+    brainLoopPhase: BrainLoopPhase,
     hudSnapshot: SystemHudSnapshot,
     hudConfig: HudVisualConfig,
     audioLevel: Float,
@@ -519,6 +573,9 @@ private fun PersonaCockpitHeader(
     onToggleListenMode: () -> Unit,
     onToggleVoiceReply: () -> Unit,
     onToggleWakeWord: () -> Unit,
+    onTogglePermanentBrain: () -> Unit,
+    onTogglePermanentBrainPause: () -> Unit,
+    onStopPermanentBrain: () -> Unit,
     onToggleHudExpanded: () -> Unit,
     onSelectHudTheme: (HudEffectTheme) -> Unit,
     onToggleFloatingHud: () -> Unit,
@@ -533,7 +590,7 @@ private fun PersonaCockpitHeader(
         initialValue = 0.88f,
         targetValue = 1.16f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (isListening || isSpeaking) 650 else 1800, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = if (isListening || isSpeaking || permanentBrainEnabled) 650 else 1800, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "orb_scale"
@@ -587,12 +644,13 @@ private fun PersonaCockpitHeader(
                     )
                     Text(
                         text = when {
+                            permanentBrainEnabled -> "Brain Mode • ${brainLoopPhase.statusHinglish}"
                             isListening -> "Sun rahi hoon… ('Hey Maya' ready)"
                             isSpeaking -> "Bol rahi hoon…"
                             else -> activePersona.tagline
                         },
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (permanentBrainEnabled && !permanentBrainPaused) accent.primary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
@@ -674,9 +732,77 @@ private fun PersonaCockpitHeader(
                 }
             }
 
+            // Live Human Brain Background Listening Status Strip
+            AnimatedVisibility(visible = permanentBrainEnabled && !compactViewport) {
+                Surface(
+                    color = accent.primary.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp)
+                        .border(1.dp, accent.primary.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                        .testTag("permanent_brain_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Psychology,
+                            contentDescription = null,
+                            tint = accent.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (permanentBrainPaused) {
+                                    "Human Brain Paused"
+                                } else {
+                                    "Background Brain LIVE • ${brainLoopPhase.statusHinglish}"
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Bina mic dabaye seedha boliye — background me bhi sunke jawab degi",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(
+                            onClick = onTogglePermanentBrainPause,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("permanent_brain_pause_button")
+                        ) {
+                            Icon(
+                                imageVector = if (permanentBrainPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                                contentDescription = stringResource(R.string.cd_permanent_brain_pause),
+                                tint = accent.primary
+                            )
+                        }
+                        IconButton(
+                            onClick = onStopPermanentBrain,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("permanent_brain_stop_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.StopCircle,
+                                contentDescription = stringResource(R.string.cd_permanent_brain_stop),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(8.dp))
 
-            // API Key + Persona + Listen Mode + Tone Selector Row
+            // Permanent Brain + API Key + Persona + Listen Mode + Tone Selector Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -684,6 +810,30 @@ private fun PersonaCockpitHeader(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                FilterChip(
+                    selected = permanentBrainEnabled,
+                    onClick = onTogglePermanentBrain,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.Psychology,
+                            contentDescription = stringResource(R.string.cd_permanent_brain_toggle),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    label = {
+                        Text(
+                            when {
+                                !permanentBrainEnabled -> stringResource(R.string.brain_chip_off)
+                                permanentBrainPaused -> stringResource(R.string.brain_chip_paused)
+                                else -> stringResource(R.string.brain_chip_live)
+                            }
+                        )
+                    },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("permanent_brain_chip")
+                )
+
                 val connectedKey = apiKeyStatus as? ApiKeyConnectionStatus.Connected
                 FilterChip(
                     selected = connectedKey != null,
@@ -879,6 +1029,7 @@ private fun MissionStepperCard(
 @Composable
 private fun QuickHinglishChipsRow(onPickPrompt: (String) -> Unit) {
     val suggestions = listOf(
+        "Permanent listening on karo",
         "System HUD aur net speed batao",
         "Floating HUD on karo",
         "Holographic mode on karo",
