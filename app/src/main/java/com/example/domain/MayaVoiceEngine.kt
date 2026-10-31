@@ -2,9 +2,11 @@ package com.example.domain
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -31,14 +33,32 @@ import kotlinx.coroutines.launch
 
 private const val TAG = "MayaVoiceEngine"
 private const val SPECTRUM_BAND_COUNT = 24
+private const val VOICE_PREFS_NAME = "maya_voice_prefs"
+private const val KEY_SILENT_LISTENING = "silent_listening_enabled"
+private const val KEY_VOICE_REPLY = "voice_reply_enabled"
+private const val KEY_CRASH_GUARD_MUTED = "streams_muted_by_maya"
+private const val KEY_SAVED_MUSIC_VOL = "saved_pre_mute_music_vol"
+
+/**
+ * Minimum window (ms) to keep output streams muted after SpeechRecognizer ends/cancels/errors
+ * so Google Speech Services' ~180-220ms end-of-speech or cancel beep plays into silence.
+ */
+private const val RECOGNIZER_BEEP_TAIL_GUARD_MS = 260L
+private const val STOP_RECOGNIZER_BEEP_GUARD_MS = 350L
+
+private val BEEP_SUPPRESSION_STREAMS = intArrayOf(
+    AudioManager.STREAM_MUSIC,
+    AudioManager.STREAM_NOTIFICATION,
+    AudioManager.STREAM_SYSTEM
+)
 
 enum class BrainLoopPhase(val statusHinglish: String) {
     OFF("Brain Mode Off"),
-    LISTENING("Sun rahi hoon, Boss…"),
+    LISTENING("Silent sun rahi hoon, Boss…"),
     THINKING("Soch rahi hoon…"),
     SPEAKING("Jawab de rahi hoon…"),
     PAUSED("Brain Paused"),
-    RECONNECTING("Mic reconnect ho raha hai…")
+    RECONNECTING("Silent mic reconnect ho raha hai…")
 }
 
 class MayaVoiceEngine(
@@ -47,15 +67,28 @@ class MayaVoiceEngine(
 ) {
 
     private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences(VOICE_PREFS_NAME, Context.MODE_PRIVATE)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private var ttsWaveJob: Job? = null
     private var autoRestartJob: Job? = null
     private var ttsWatchdogJob: Job? = null
+    private var pendingDelayedSpeakJob: Job? = null
+    private var releaseMuteTailJob: Job? = null
 
     @Volatile
     private var isAiThinking = false
+
+    @Volatile
+    private var isRecognizerSessionActive = false
+
+    @Volatile
+    private var lastRecognizerToneEventAtMs = 0L
+
+    private val muteLock = Any()
+    private val streamsMutedByMaya = mutableSetOf<Int>()
+    private var savedPreMuteMusicVolume: Int? = null
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -83,6 +116,20 @@ class MayaVoiceEngine(
     val brainLoopPhase: StateFlow<BrainLoopPhase> = _brainLoopPhase.asStateFlow()
 
     /**
+     * Zero-Beep Silent Listening is ON by default so Android SpeechRecognizer never plays
+     * start/timeout/post-task beeps during listening or after completing tasks.
+     */
+    private val _silentListeningEnabled = MutableStateFlow(
+        prefs.getBoolean(KEY_SILENT_LISTENING, true)
+    )
+    val silentListeningEnabled: StateFlow<Boolean> = _silentListeningEnabled.asStateFlow()
+
+    private val _voiceReplyEnabled = MutableStateFlow(
+        prefs.getBoolean(KEY_VOICE_REPLY, true)
+    )
+    val voiceReplyEnabled: StateFlow<Boolean> = _voiceReplyEnabled.asStateFlow()
+
+    /**
      * Normalized 0f..1f audio energy & 24-band spectrum mirroring `maya-ui` (`audio_worker.py` + `mic_visualizer.py`),
      * reacting to real microphone RMS dB during speech recognition and TTS output cadence when Maya speaks.
      */
@@ -98,6 +145,7 @@ class MayaVoiceEngine(
     private var onSpeechErrorCallback: ((String) -> Unit)? = null
 
     init {
+        recoverIfPreviousProcessLeftStreamsMuted()
         runCatching {
             tts = TextToSpeech(appContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
@@ -132,6 +180,194 @@ class MayaVoiceEngine(
         }
     }
 
+    private fun audioManagerOrNull(): AudioManager? {
+        return appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    }
+
+    private fun recoverIfPreviousProcessLeftStreamsMuted() {
+        runCatching {
+            if (prefs.getBoolean(KEY_CRASH_GUARD_MUTED, false)) {
+                val am = audioManagerOrNull()
+                val savedVol = prefs.getInt(KEY_SAVED_MUSIC_VOL, -1)
+                if (am != null) {
+                    for (stream in BEEP_SUPPRESSION_STREAMS) {
+                        runCatching {
+                            am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
+                        }
+                    }
+                    if (savedVol > 0 && am.getStreamVolume(AudioManager.STREAM_MUSIC) == 0) {
+                        runCatching { am.setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0) }
+                    }
+                }
+                prefs.edit()
+                    .putBoolean(KEY_CRASH_GUARD_MUTED, false)
+                    .remove(KEY_SAVED_MUSIC_VOL)
+                    .apply()
+            }
+        }
+    }
+
+    private fun isContinuousListeningActive(): Boolean {
+        return (_permanentBrainEnabled.value && !_permanentBrainPaused.value) || _wakeWordModeEnabled.value
+    }
+
+    /**
+     * Silences Android SpeechRecognizer's built-in start, end-of-speech, timeout, and restart beeps
+     * with flags = 0 (no system volume popup).
+     */
+    internal fun engageSilentListeningMute() {
+        releaseMuteTailJob?.cancel()
+        releaseMuteTailJob = null
+        if (!_silentListeningEnabled.value) return
+        val am = audioManagerOrNull() ?: return
+
+        synchronized(muteLock) {
+            var changed = false
+            for (stream in BEEP_SUPPRESSION_STREAMS) {
+                runCatching {
+                    val alreadyMuted = am.isStreamMute(stream)
+                    if (!alreadyMuted) {
+                        if (stream == AudioManager.STREAM_MUSIC && savedPreMuteMusicVolume == null) {
+                            val curVol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                            if (curVol > 0) {
+                                savedPreMuteMusicVolume = curVol
+                            }
+                        }
+                        am.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, 0)
+                        streamsMutedByMaya.add(stream)
+                        changed = true
+                    }
+                }
+            }
+            if (changed) {
+                val editor = prefs.edit().putBoolean(KEY_CRASH_GUARD_MUTED, true)
+                savedPreMuteMusicVolume?.let { editor.putInt(KEY_SAVED_MUSIC_VOL, it) }
+                editor.apply()
+            }
+        }
+    }
+
+    /**
+     * Unmutes STREAM_MUSIC right before Maya's TTS speaks so Boss hears the reply clearly,
+     * while keeping STREAM_NOTIFICATION and STREAM_SYSTEM muted against late recognizer chimes.
+     */
+    private fun prepareStreamsForTtsSpeech() {
+        releaseMuteTailJob?.cancel()
+        releaseMuteTailJob = null
+        val am = audioManagerOrNull() ?: return
+        synchronized(muteLock) {
+            if (streamsMutedByMaya.remove(AudioManager.STREAM_MUSIC)) {
+                runCatching {
+                    am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
+                    val savedVol = savedPreMuteMusicVolume
+                    if (savedVol != null && savedVol > 0 && am.getStreamVolume(AudioManager.STREAM_MUSIC) == 0) {
+                        am.setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun scheduleReleaseSilentListeningMute(delayMs: Long = STOP_RECOGNIZER_BEEP_GUARD_MS) {
+        releaseMuteTailJob?.cancel()
+        if (delayMs <= 0L) {
+            releaseAllSilentListeningMutesImmediate()
+            return
+        }
+        releaseMuteTailJob = audioScope.launch {
+            delay(delayMs)
+            if (!isActive) return@launch
+            if (_isListening.value || isRecognizerSessionActive) return@launch
+            if (isContinuousListeningActive() && !_isSpeaking.value) return@launch
+            releaseAllSilentListeningMutesImmediate()
+        }
+    }
+
+    internal fun releaseAllSilentListeningMutesImmediate() {
+        releaseMuteTailJob?.cancel()
+        releaseMuteTailJob = null
+        val am = audioManagerOrNull()
+        synchronized(muteLock) {
+            if (am != null && streamsMutedByMaya.isNotEmpty()) {
+                val toRestore = streamsMutedByMaya.toList()
+                streamsMutedByMaya.clear()
+                for (stream in toRestore) {
+                    runCatching {
+                        am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
+                        if (stream == AudioManager.STREAM_MUSIC) {
+                            val savedVol = savedPreMuteMusicVolume
+                            if (savedVol != null && savedVol > 0 && am.getStreamVolume(AudioManager.STREAM_MUSIC) == 0) {
+                                am.setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0)
+                            }
+                        }
+                    }
+                }
+            } else {
+                streamsMutedByMaya.clear()
+            }
+            savedPreMuteMusicVolume = null
+            prefs.edit()
+                .putBoolean(KEY_CRASH_GUARD_MUTED, false)
+                .remove(KEY_SAVED_MUSIC_VOL)
+                .apply()
+        }
+    }
+
+    /**
+     * Returns the user's true media volume index even while STREAM_MUSIC is temporarily muted
+     * by Maya's Silent Listening guard, so telemetry never falsely displays 0%.
+     */
+    fun getEffectiveMusicVolume(audioManager: AudioManager): Int {
+        synchronized(muteLock) {
+            if (streamsMutedByMaya.contains(AudioManager.STREAM_MUSIC)) {
+                savedPreMuteMusicVolume?.let { return it }
+            }
+        }
+        return audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+    }
+
+    fun onExternalMediaVolumeChanged(newVolumeIndex: Int) {
+        synchronized(muteLock) {
+            savedPreMuteMusicVolume = newVolumeIndex.takeIf { it > 0 }
+            // Setting a non-zero volume on Android implicitly unmutes STREAM_MUSIC
+            if (newVolumeIndex > 0) {
+                streamsMutedByMaya.remove(AudioManager.STREAM_MUSIC)
+            }
+        }
+        // If Maya is currently listening silently (not speaking), re-mute cleanly after volume update
+        if (_silentListeningEnabled.value && !_isSpeaking.value &&
+            (_isListening.value || isContinuousListeningActive())
+        ) {
+            engageSilentListeningMute()
+        }
+    }
+
+    internal fun isMusicStreamMutedByGuard(): Boolean {
+        synchronized(muteLock) {
+            return streamsMutedByMaya.contains(AudioManager.STREAM_MUSIC)
+        }
+    }
+
+    fun setSilentListeningEnabled(enabled: Boolean) {
+        _silentListeningEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_SILENT_LISTENING, enabled).apply()
+        if (enabled) {
+            if (!_isSpeaking.value && (_isListening.value || isContinuousListeningActive())) {
+                engageSilentListeningMute()
+            }
+        } else {
+            releaseAllSilentListeningMutesImmediate()
+        }
+    }
+
+    fun setVoiceReplyEnabled(enabled: Boolean) {
+        _voiceReplyEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_VOICE_REPLY, enabled).apply()
+        if (!enabled) {
+            stopSpeaking()
+        }
+    }
+
     private fun runOnMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             block()
@@ -146,13 +382,23 @@ class MayaVoiceEngine(
 
     private fun onTtsUtteranceFinished() {
         isAiThinking = false
+        pendingDelayedSpeakJob?.cancel()
+        pendingDelayedSpeakJob = null
         ttsWatchdogJob?.cancel()
         ttsWatchdogJob = null
         _isSpeaking.value = false
         stopTtsOutputSpectrum()
-        if (_permanentBrainEnabled.value && !_permanentBrainPaused.value) {
+
+        if (isContinuousListeningActive()) {
+            // Immediately re-engage silent mute BEFORE SpeechRecognizer restarts so ZERO post-task beep plays!
+            if (_silentListeningEnabled.value && isRecognitionSupported()) {
+                engageSilentListeningMute()
+            }
             // Short 380ms acoustic tail guard so room echo of Maya's own voice fades before mic reopens
             scheduleAutoResumeListening(delayMs = 380L)
+        } else {
+            // Single-shot turn completed: restore any muted streams cleanly with zero beep
+            releaseAllSilentListeningMutesImmediate()
         }
     }
 
@@ -215,30 +461,41 @@ class MayaVoiceEngine(
     }
 
     /**
-     * Speaks Maya's reply with Self-Echo Guard:
-     * Automatically pauses microphone recognition while speaking and resumes listening when finished.
+     * Speaks Maya's reply with Self-Echo Guard & Zero-Beep Stream Transition:
+     * Automatically pauses microphone recognition while muted, waits out any trailing recognizer
+     * end-beep window, unmutes media stream for TTS, and re-mutes before resuming listening.
      */
     fun speak(
         text: String,
         persona: MayaPersona,
         tone: MayaTone,
-        voiceEnabled: Boolean = true
+        voiceEnabled: Boolean = _voiceReplyEnabled.value
     ): Boolean {
         isAiThinking = false
         val clean = sanitizeForVoice(text)
         if (!voiceEnabled || clean.isBlank()) {
-            if (_permanentBrainEnabled.value && !_permanentBrainPaused.value) {
+            if (isContinuousListeningActive()) {
+                if (_silentListeningEnabled.value && isRecognitionSupported()) {
+                    engageSilentListeningMute()
+                }
                 scheduleAutoResumeListening(delayMs = 240L)
+            } else {
+                scheduleReleaseSilentListeningMute(delayMs = RECOGNIZER_BEEP_TAIL_GUARD_MS)
             }
             return false
         }
 
-        // Self-Echo Prevention: Pause mic BEFORE Maya's voice comes out of speaker
+        // Self-Echo Prevention: Pause mic WHILE streams are still muted so cancel produces zero beep
         pauseMicForSpeechOutput()
 
         if (!ttsReady || tts == null) {
-            if (_permanentBrainEnabled.value && !_permanentBrainPaused.value) {
+            if (isContinuousListeningActive()) {
+                if (_silentListeningEnabled.value && isRecognitionSupported()) {
+                    engageSilentListeningMute()
+                }
                 scheduleAutoResumeListening(delayMs = 300L)
+            } else {
+                scheduleReleaseSilentListeningMute(delayMs = RECOGNIZER_BEEP_TAIL_GUARD_MS)
             }
             return false
         }
@@ -255,17 +512,29 @@ class MayaVoiceEngine(
         }
         startTtsOutputSpectrum()
 
-        val result = runCatching {
-            tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, utteranceId) ?: TextToSpeech.ERROR
-        }.getOrDefault(TextToSpeech.ERROR)
+        val elapsedSinceRecognizerEnd = SystemClock.uptimeMillis() - lastRecognizerToneEventAtMs
+        val tailWaitMs = if (isMusicStreamMutedByGuard() && elapsedSinceRecognizerEnd in 0 until RECOGNIZER_BEEP_TAIL_GUARD_MS) {
+            RECOGNIZER_BEEP_TAIL_GUARD_MS - elapsedSinceRecognizerEnd
+        } else {
+            0L
+        }
 
-        if (result == TextToSpeech.ERROR) {
-            onTtsUtteranceFinished()
-            return false
+        pendingDelayedSpeakJob?.cancel()
+        if (tailWaitMs > 0L) {
+            pendingDelayedSpeakJob = audioScope.launch {
+                delay(tailWaitMs)
+                if (!isActive || !_isSpeaking.value) return@launch
+                runOnMain {
+                    if (!_isSpeaking.value) return@runOnMain
+                    dispatchTtsSpeakNow(clean, utteranceId)
+                }
+            }
+        } else {
+            dispatchTtsSpeakNow(clean, utteranceId)
         }
 
         // Safety watchdog in case OEM/headless TTS engine drops onDone callback
-        val estimatedMaxMs = (clean.length * 90L + 2600L).coerceIn(3000L, 24000L)
+        val estimatedMaxMs = (clean.length * 90L + 2600L + tailWaitMs).coerceIn(3000L, 24000L)
         ttsWatchdogJob?.cancel()
         ttsWatchdogJob = audioScope.launch {
             delay(estimatedMaxMs)
@@ -276,22 +545,48 @@ class MayaVoiceEngine(
         return true
     }
 
+    private fun dispatchTtsSpeakNow(clean: String, utteranceId: String) {
+        prepareStreamsForTtsSpeech()
+        val result = runCatching {
+            tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, utteranceId) ?: TextToSpeech.ERROR
+        }.getOrDefault(TextToSpeech.ERROR)
+
+        if (result == TextToSpeech.ERROR) {
+            onTtsUtteranceFinished()
+        }
+    }
+
     fun stopSpeaking() {
+        pendingDelayedSpeakJob?.cancel()
+        pendingDelayedSpeakJob = null
         ttsWatchdogJob?.cancel()
         ttsWatchdogJob = null
         runCatching { tts?.stop() }
         _isSpeaking.value = false
         stopTtsOutputSpectrum()
-        if (_permanentBrainEnabled.value && !_permanentBrainPaused.value && !_isListening.value) {
+        if (isContinuousListeningActive() && !_isListening.value) {
+            if (_silentListeningEnabled.value && isRecognitionSupported()) {
+                engageSilentListeningMute()
+            }
             scheduleAutoResumeListening(delayMs = 280L)
+        } else if (!isContinuousListeningActive() && !_isListening.value) {
+            scheduleReleaseSilentListeningMute(delayMs = 150L)
         }
     }
 
     private fun pauseMicForSpeechOutput() {
         autoRestartJob?.cancel()
         autoRestartJob = null
-        runOnMain {
-            runCatching { speechRecognizer?.cancel() }
+        val shouldCancelRecognizer = isRecognizerSessionActive
+        if (shouldCancelRecognizer) {
+            if (_silentListeningEnabled.value && isRecognitionSupported()) {
+                engageSilentListeningMute()
+            }
+            isRecognizerSessionActive = false
+            lastRecognizerToneEventAtMs = SystemClock.uptimeMillis()
+            runOnMain {
+                runCatching { speechRecognizer?.cancel() }
+            }
         }
         _isListening.value = false
         _partialTranscript.value = ""
@@ -312,9 +607,12 @@ class MayaVoiceEngine(
             _permanentBrainPaused.value = false
             if (!_isSpeaking.value) {
                 _brainLoopPhase.value = BrainLoopPhase.LISTENING
-                val cb = onFinalSpeechResult
-                if (cb != null) {
-                    startListening(cb, onSpeechErrorCallback ?: {})
+                // Avoid restarting SpeechRecognizer if it is already actively listening (prevents ERROR_RECOGNIZER_BUSY beep)
+                if (!_isListening.value && !isRecognizerSessionActive) {
+                    val cb = onFinalSpeechResult
+                    if (cb != null) {
+                        startListening(cb, onSpeechErrorCallback ?: {})
+                    }
                 }
             } else {
                 _brainLoopPhase.value = BrainLoopPhase.SPEAKING
@@ -342,6 +640,9 @@ class MayaVoiceEngine(
             stopListening()
         } else {
             _brainLoopPhase.value = BrainLoopPhase.LISTENING
+            if (_silentListeningEnabled.value && isRecognitionSupported()) {
+                engageSilentListeningMute()
+            }
             scheduleAutoResumeListening(delayMs = 150L)
         }
     }
@@ -358,36 +659,48 @@ class MayaVoiceEngine(
     }
 
     fun notifyThinkingStarted() {
-        if (_permanentBrainEnabled.value && !_permanentBrainPaused.value) {
+        if (isContinuousListeningActive()) {
             isAiThinking = true
             pauseMicForSpeechOutput()
-            _brainLoopPhase.value = BrainLoopPhase.THINKING
+            if (_permanentBrainEnabled.value && !_permanentBrainPaused.value) {
+                _brainLoopPhase.value = BrainLoopPhase.THINKING
+            }
+        } else if (_isListening.value || isRecognizerSessionActive) {
+            pauseMicForSpeechOutput()
         }
     }
 
     fun notifyTurnCompletedWithoutSpeech() {
         isAiThinking = false
-        if (_permanentBrainEnabled.value && !_permanentBrainPaused.value && !_isSpeaking.value) {
-            scheduleAutoResumeListening(delayMs = 260L)
+        if (isContinuousListeningActive()) {
+            if (!_isSpeaking.value && !_isListening.value && !isRecognizerSessionActive) {
+                if (_silentListeningEnabled.value && isRecognitionSupported()) {
+                    engageSilentListeningMute()
+                }
+                scheduleAutoResumeListening(delayMs = 260L)
+            }
+        } else if (!_isSpeaking.value && !_isListening.value && !isRecognizerSessionActive) {
+            scheduleReleaseSilentListeningMute(delayMs = RECOGNIZER_BEEP_TAIL_GUARD_MS)
         }
     }
 
     private fun scheduleAutoResumeListening(delayMs: Long, resetRecognizerInstance: Boolean = false) {
-        if (!_permanentBrainEnabled.value || _permanentBrainPaused.value) return
+        if (!isContinuousListeningActive()) return
         autoRestartJob?.cancel()
         autoRestartJob = audioScope.launch {
             delay(delayMs)
-            if (!isActive || !_permanentBrainEnabled.value || _permanentBrainPaused.value || _isSpeaking.value) {
-                return@launch
-            }
-            if (isAiThinking) {
+            if (!isActive || !isContinuousListeningActive() || _isSpeaking.value || isAiThinking) {
                 return@launch
             }
             runOnMain {
-                if (!_permanentBrainEnabled.value || _permanentBrainPaused.value || _isSpeaking.value || isAiThinking) {
+                if (!isContinuousListeningActive() || _isSpeaking.value || isAiThinking) {
+                    return@runOnMain
+                }
+                if (!resetRecognizerInstance && _isListening.value && isRecognizerSessionActive) {
                     return@runOnMain
                 }
                 if (resetRecognizerInstance) {
+                    isRecognizerSessionActive = false
                     runCatching { speechRecognizer?.destroy() }
                     speechRecognizer = null
                 }
@@ -418,7 +731,7 @@ class MayaVoiceEngine(
         onError: (String) -> Unit,
         isAutoRestart: Boolean
     ) {
-        if (!isAutoRestart) {
+        if (!isAutoRestart && _isSpeaking.value) {
             stopSpeaking()
         }
         onFinalSpeechResult = onResult
@@ -429,13 +742,16 @@ class MayaVoiceEngine(
                 _brainLoopPhase.value = BrainLoopPhase.LISTENING
                 _isListening.value = true
                 if (!isAutoRestart) {
-                    onError("Is device/emulator pe SpeechRecognizer uplabdh nahi hai, Boss — real phone pe Maya lagatar sunegi.")
+                    onError("Is device/emulator pe SpeechRecognizer uplabdh nahi hai, Boss — real phone pe Maya bina beep ke lagatar sunegi.")
                 }
             } else {
                 onError("Is device/emulator pe SpeechRecognizer service uplabdh nahi hai, Boss — aap type karke command de sakte hain.")
             }
             return
         }
+
+        // Mute system/media beep streams BEFORE SpeechRecognizer initializes & starts listening
+        engageSilentListeningMute()
 
         try {
             if (speechRecognizer == null) {
@@ -444,17 +760,20 @@ class MayaVoiceEngine(
                 }
             }
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.ACTION_RECOGNIZE_SPEECH, true)
+                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                if (_permanentBrainEnabled.value) {
+                if (_permanentBrainEnabled.value || _wakeWordModeEnabled.value) {
                     putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1450L)
                     putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1150L)
                 }
             }
             _partialTranscript.value = ""
             _isListening.value = true
+            isRecognizerSessionActive = true
             if (_permanentBrainEnabled.value && !_permanentBrainPaused.value) {
                 _brainLoopPhase.value = BrainLoopPhase.LISTENING
             }
@@ -462,12 +781,16 @@ class MayaVoiceEngine(
             speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start SpeechRecognizer", e)
+            isRecognizerSessionActive = false
             _isListening.value = false
             resetSpectrumIdle()
-            if (_permanentBrainEnabled.value && !_permanentBrainPaused.value) {
-                _brainLoopPhase.value = BrainLoopPhase.RECONNECTING
+            if (isContinuousListeningActive()) {
+                if (_permanentBrainEnabled.value && !_permanentBrainPaused.value) {
+                    _brainLoopPhase.value = BrainLoopPhase.RECONNECTING
+                }
                 scheduleAutoResumeListening(delayMs = 1200L, resetRecognizerInstance = true)
             } else {
+                scheduleReleaseSilentListeningMute(delayMs = 250L)
                 onError("Mic start nahi ho paya: ${e.localizedMessage ?: "unknown error"}")
             }
         }
@@ -476,22 +799,36 @@ class MayaVoiceEngine(
     fun stopListening() {
         autoRestartJob?.cancel()
         autoRestartJob = null
-        runOnMain {
-            runCatching { speechRecognizer?.stopListening() }
-            runCatching { speechRecognizer?.cancel() }
+        val wasActive = isRecognizerSessionActive
+        if (wasActive) {
+            if (_silentListeningEnabled.value && isRecognitionSupported()) {
+                engageSilentListeningMute()
+            }
+            isRecognizerSessionActive = false
+            lastRecognizerToneEventAtMs = SystemClock.uptimeMillis()
+            runOnMain {
+                // Only call cancel() (NOT stopListening() + cancel(), which caused a double end/cancel beep)
+                runCatching { speechRecognizer?.cancel() }
+            }
         }
         _isListening.value = false
         _partialTranscript.value = ""
         if (!_isSpeaking.value) {
             resetSpectrumIdle()
+            scheduleReleaseSilentListeningMute(
+                delayMs = if (wasActive) STOP_RECOGNIZER_BEEP_GUARD_MS else 80L
+            )
         }
     }
 
     fun shutdown() {
         try {
             autoRestartJob?.cancel()
+            pendingDelayedSpeakJob?.cancel()
             ttsWatchdogJob?.cancel()
             ttsWaveJob?.cancel()
+            releaseMuteTailJob?.cancel()
+            isRecognizerSessionActive = false
             audioScope.cancel()
             runOnMain {
                 runCatching { speechRecognizer?.destroy() }
@@ -501,6 +838,8 @@ class MayaVoiceEngine(
             tts?.shutdown()
             tts = null
         } catch (_: Exception) {
+        } finally {
+            releaseAllSilentListeningMutesImmediate()
         }
     }
 
@@ -515,8 +854,10 @@ class MayaVoiceEngine(
     private fun handleRecognizedText(rawText: String) {
         val trimmed = rawText.trim()
         if (trimmed.isBlank()) {
-            if (_permanentBrainEnabled.value && !_permanentBrainPaused.value) {
+            if (isContinuousListeningActive()) {
                 scheduleAutoResumeListening(delayMs = 220L)
+            } else {
+                scheduleReleaseSilentListeningMute(delayMs = STOP_RECOGNIZER_BEEP_GUARD_MS)
             }
             return
         }
@@ -554,11 +895,10 @@ class MayaVoiceEngine(
                         lower.indexOf(matchedPrefix) + matchedPrefix.length
                     )
                 ).trim().ifBlank { "Haan Maya, suno" }
+                isAiThinking = true
                 onFinalSpeechResult?.invoke(stripped)
             } else {
-                onFinalSpeechResult?.let { cb ->
-                    startListening(cb, onSpeechErrorCallback ?: {})
-                }
+                scheduleAutoResumeListening(delayMs = 220L)
             }
         } else {
             onFinalSpeechResult?.invoke(trimmed)
@@ -584,11 +924,14 @@ class MayaVoiceEngine(
         override fun onBufferReceived(buffer: ByteArray?) {}
 
         override fun onEndOfSpeech() {
+            lastRecognizerToneEventAtMs = SystemClock.uptimeMillis()
             _isListening.value = false
             resetSpectrumIdle()
         }
 
         override fun onError(error: Int) {
+            isRecognizerSessionActive = false
+            lastRecognizerToneEventAtMs = SystemClock.uptimeMillis()
             _isListening.value = false
             _partialTranscript.value = ""
             resetSpectrumIdle()
@@ -597,10 +940,11 @@ class MayaVoiceEngine(
                 if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                     _permanentBrainEnabled.value = false
                     _brainLoopPhase.value = BrainLoopPhase.OFF
+                    scheduleReleaseSilentListeningMute(delayMs = STOP_RECOGNIZER_BEEP_GUARD_MS)
                     onSpeechErrorCallback?.invoke("Permanent listening ke liye Mic permission chahiye, Boss.")
                     return
                 }
-                // Quietly auto-recover in Human Brain Mode without spamming chat on natural silence
+                // Quietly auto-recover in Human Brain Mode while streams stay continuously muted (zero beep!)
                 val needsReset = error !in listOf(
                     SpeechRecognizer.ERROR_NO_MATCH,
                     SpeechRecognizer.ERROR_SPEECH_TIMEOUT
@@ -618,11 +962,12 @@ class MayaVoiceEngine(
                     SpeechRecognizer.ERROR_SPEECH_TIMEOUT
                 )
             ) {
-                onFinalSpeechResult?.let { cb ->
-                    startListening(cb, onSpeechErrorCallback ?: {})
-                }
+                scheduleAutoResumeListening(delayMs = 280L)
                 return
             }
+
+            // Single-shot mode error: keep streams muted past the error chime tail, then restore cleanly
+            scheduleReleaseSilentListeningMute(delayMs = STOP_RECOGNIZER_BEEP_GUARD_MS)
 
             val msg = when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH -> "Awaaz saaf sunai nahi di, Boss. Dobara boliye?"
@@ -634,6 +979,8 @@ class MayaVoiceEngine(
         }
 
         override fun onResults(results: Bundle?) {
+            isRecognizerSessionActive = false
+            lastRecognizerToneEventAtMs = SystemClock.uptimeMillis()
             _isListening.value = false
             _partialTranscript.value = ""
             resetSpectrumIdle()

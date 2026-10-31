@@ -174,8 +174,8 @@ class MayaViewModel(
     private val _isThinking = MutableStateFlow(false)
     val isThinking: StateFlow<Boolean> = _isThinking.asStateFlow()
 
-    private val _voiceReplyEnabled = MutableStateFlow(true)
-    val voiceReplyEnabled: StateFlow<Boolean> = _voiceReplyEnabled.asStateFlow()
+    val voiceReplyEnabled: StateFlow<Boolean> = voiceEngine.voiceReplyEnabled
+    val silentListeningEnabled: StateFlow<Boolean> = voiceEngine.silentListeningEnabled
 
     private val _pendingConfirmation = MutableStateFlow<PendingConfirmation?>(null)
     val pendingConfirmation: StateFlow<PendingConfirmation?> = _pendingConfirmation.asStateFlow()
@@ -250,7 +250,6 @@ class MayaViewModel(
             }
         )
         if (voiceEngine.permanentBrainEnabled.value) {
-            _voiceReplyEnabled.value = true
             voiceEngine.bindBrainCallbacks(
                 onTranscript = uiBrainTranscriptHandler,
                 onError = { errMsg ->
@@ -323,9 +322,19 @@ class MayaViewModel(
     }
 
     fun toggleVoiceReply() {
-        val next = !_voiceReplyEnabled.value
-        _voiceReplyEnabled.value = next
-        if (!next) voiceEngine.stopSpeaking()
+        voiceEngine.setVoiceReplyEnabled(!voiceReplyEnabled.value)
+    }
+
+    fun setVoiceReplyEnabled(enabled: Boolean) {
+        voiceEngine.setVoiceReplyEnabled(enabled)
+    }
+
+    fun setSilentListeningEnabled(enabled: Boolean) {
+        voiceEngine.setSilentListeningEnabled(enabled)
+    }
+
+    fun toggleSilentListening() {
+        voiceEngine.setSilentListeningEnabled(!silentListeningEnabled.value)
     }
 
     fun clearBrainPermissionRequest() {
@@ -352,7 +361,6 @@ class MayaViewModel(
                 return
             }
             _needsBrainMicPermissionEvent.value = false
-            _voiceReplyEnabled.value = true
             voiceEngine.setPermanentBrainLoop(
                 enabled = true,
                 onTranscript = uiBrainTranscriptHandler,
@@ -362,8 +370,9 @@ class MayaViewModel(
             )
             MayaPermanentBrainService.start(phoneExecutor.appContext)
             appendMayaBubble(
-                "Human Brain Permanent Listening chalu ho gaya hai, ${currentProfile().bossName}! Ab aap app minimize bhi kar dein to main background me hamesha sunungi aur insaan ki tarah turant bolkar jawab dungi.",
-                badge = "Brain LIVE • Background"
+                "Silent Human Brain Listening chalu ho gaya hai, ${currentProfile().bossName}! Bina kisi beep sound ke background me hamesha chupchap sunungi — seedha boliye.",
+                badge = "Silent Brain LIVE",
+                speakOut = false
             )
         } else {
             _needsBrainMicPermissionEvent.value = false
@@ -371,7 +380,8 @@ class MayaViewModel(
             MayaPermanentBrainService.stop(phoneExecutor.appContext)
             appendMayaBubble(
                 "Permanent background listening band kar diya hai, ${currentProfile().bossName}.",
-                badge = "Brain Mode OFF"
+                badge = "Brain Mode OFF",
+                speakOut = false
             )
         }
     }
@@ -562,10 +572,66 @@ class MayaViewModel(
         if (lowerCmd in setOf("resume listening", "brain resume", "brain resume karo", "wapas suno")) {
             if (permanentBrainEnabled.value) {
                 voiceEngine.setPermanentBrainPaused(false)
-                appendMayaBubble("Wapas sun rahi hoon, ${currentProfile().bossName}.", badge = "Brain LIVE")
+                appendMayaBubble("Wapas silent sun rahi hoon, ${currentProfile().bossName}.", badge = "Silent Brain LIVE", speakOut = false)
             } else {
                 setPermanentBrainMode(enabled = true)
             }
+            return
+        }
+
+        // 5.5 Instant Zero-Beep Silent Listening & Post-Work Sound Control shortcuts
+        if (lowerCmd in setOf(
+                "silent listening",
+                "silent listening on",
+                "silent listening on karo",
+                "silent listening chalu karo",
+                "beep band",
+                "beep band karo",
+                "bip band karo",
+                "beep sound off",
+                "beep sound band karo",
+                "mic beep band karo"
+            )
+        ) {
+            voiceEngine.setSilentListeningEnabled(true)
+            appendMayaBubble(
+                "Silent Listening active hai ${currentProfile().bossName} — listening ke waqt aur kaam poora hone ke baad koi beep sound nahi aayega.",
+                badge = "Silent • No Beep",
+                speakOut = false
+            )
+            return
+        }
+        if (lowerCmd in setOf(
+                "kaam karne ke baad sound band karo",
+                "kaam ke baad sound band karo",
+                "kaam ke baad sound off",
+                "sound band karo",
+                "sound band kar do",
+                "voice reply off",
+                "voice reply band",
+                "voice reply band karo",
+                "awaaz band karo",
+                "bolna band karo",
+                "chupchap kaam karo",
+                "silent mode on"
+            )
+        ) {
+            voiceEngine.setSilentListeningEnabled(true)
+            voiceEngine.setVoiceReplyEnabled(false)
+            appendMayaBubble(
+                "Done ${currentProfile().bossName}, 100% Silent Mode active hai — na listening me beep aayega aur na kaam poora hone ke baad koi sound bajega.",
+                badge = "100% Silent Mode",
+                speakOut = false
+            )
+            return
+        }
+        if (lowerCmd in setOf("voice reply on", "voice reply chalu karo", "awaaz chalu karo", "bolkar jawab do")) {
+            voiceEngine.setSilentListeningEnabled(true)
+            voiceEngine.setVoiceReplyEnabled(true)
+            appendMayaBubble(
+                "Voice reply wapas chalu kar diya hai ${currentProfile().bossName} (mic beep abhi bhi poori tarah silent rahega).",
+                badge = "Voice Reply ON"
+            )
             return
         }
 
@@ -1289,7 +1355,15 @@ class MayaViewModel(
                 "'${doc.title}' delete kar diya, Boss."
             }
         )
-        voiceEngine.speak(ask, MayaPersona.fromId(currentProfile().persona), MayaTone.fromId(currentProfile().tone), _voiceReplyEnabled.value)
+        val spoke = voiceEngine.speak(
+            ask,
+            MayaPersona.fromId(currentProfile().persona),
+            MayaTone.fromId(currentProfile().tone),
+            voiceReplyEnabled.value
+        )
+        if (!spoke) {
+            voiceEngine.notifyTurnCompletedWithoutSpeech()
+        }
     }
 
     fun advanceMissionStep() {
@@ -1486,6 +1560,7 @@ class MayaViewModel(
                 "'$name' save ho gaya, Boss."
             }
         )
+        voiceEngine.notifyTurnCompletedWithoutSpeech()
     }
 
     fun toggleSkill(skill: SkillPlaybook) {
@@ -1503,6 +1578,7 @@ class MayaViewModel(
                 "'${skill.name}' hata diya, Boss."
             }
         )
+        voiceEngine.notifyTurnCompletedWithoutSpeech()
     }
 
     fun addReminderManual(kind: String, title: String, detail: String, scheduled: String) {
@@ -1696,7 +1772,7 @@ class MayaViewModel(
                     text = text,
                     persona = MayaPersona.fromId(prof.persona),
                     tone = MayaTone.fromId(prof.tone),
-                    voiceEnabled = _voiceReplyEnabled.value
+                    voiceEnabled = voiceReplyEnabled.value
                 )
             }.onFailure { e ->
                 Log.w(TAG, "TTS speak failed", e)

@@ -145,7 +145,7 @@ class MayaPermanentBrainService : Service() {
     private val liveInfoClient = LiveInfoClient()
 
     private val headlessHistory = ArrayDeque<Pair<String, String>>()
-    private var latestSubtitle: String = "Background me hamesha active — seedha boliye, jawab milega"
+    private var latestSubtitle: String = "Silent listening active (no beep) — seedha boliye, Boss"
 
     override fun onCreate() {
         super.onCreate()
@@ -233,7 +233,7 @@ class MayaPermanentBrainService : Service() {
         MayaBrainBus.updateLastHeard(cleaned)
         val lower = cleaned.lowercase(Locale.ROOT)
 
-        // Instant voice stop/pause commands that work even when phone screen is off or in another app
+        // Instant voice stop/pause/silent commands that work even when phone screen is off or in another app
         if (lower in setOf(
                 "permanent listening off",
                 "permanent listening band",
@@ -244,7 +244,7 @@ class MayaPermanentBrainService : Service() {
                 "stop permanent listening"
             )
         ) {
-            stopBrainModeCleanly(speakFarewell = true)
+            stopBrainModeCleanly(speakFarewell = false)
             return
         }
 
@@ -252,6 +252,48 @@ class MayaPermanentBrainService : Service() {
             voiceEngine.setPermanentBrainPaused(true)
             latestSubtitle = "Brain paused — Resume dabayein"
             updateOngoingNotification(BrainLoopPhase.PAUSED)
+            return
+        }
+
+        if (lower in setOf(
+                "beep band karo",
+                "bip band karo",
+                "beep sound band karo",
+                "silent listening",
+                "silent listening on",
+                "silent listening on karo"
+            )
+        ) {
+            voiceEngine.setSilentListeningEnabled(true)
+            latestSubtitle = "Silent Listening ON — koi beep sound nahi aayega"
+            updateOngoingNotification(BrainLoopPhase.LISTENING)
+            voiceEngine.notifyTurnCompletedWithoutSpeech()
+            return
+        }
+
+        if (lower in setOf(
+                "kaam karne ke baad sound band karo",
+                "kaam ke baad sound band karo",
+                "voice reply off",
+                "voice reply band karo",
+                "awaaz band karo",
+                "bolna band karo",
+                "chupchap kaam karo"
+            )
+        ) {
+            voiceEngine.setSilentListeningEnabled(true)
+            voiceEngine.setVoiceReplyEnabled(false)
+            latestSubtitle = "100% Silent Mode ON — bina beep aur bina bole kaam hoga"
+            updateOngoingNotification(BrainLoopPhase.LISTENING)
+            voiceEngine.notifyTurnCompletedWithoutSpeech()
+            return
+        }
+
+        if (lower in setOf("voice reply on", "awaaz chalu karo", "bolkar jawab do")) {
+            voiceEngine.setVoiceReplyEnabled(true)
+            latestSubtitle = "Voice reply wapas ON (Silent no-beep mic active)"
+            updateOngoingNotification(BrainLoopPhase.LISTENING)
+            voiceEngine.notifyTurnCompletedWithoutSpeech()
             return
         }
 
@@ -288,7 +330,15 @@ class MayaPermanentBrainService : Service() {
                     ) {
                         val guardMsg = "Voice Guardian active hai, $bossName. Passphrase bolkar verify karein."
                         latestSubtitle = guardMsg
-                        voiceEngine.speak(guardMsg, persona, tone, voiceEnabled = true)
+                        val spokeGuard = voiceEngine.speak(
+                            guardMsg,
+                            persona,
+                            tone,
+                            voiceEnabled = voiceEngine.voiceReplyEnabled.value
+                        )
+                        if (!spokeGuard) {
+                            voiceEngine.notifyTurnCompletedWithoutSpeech()
+                        }
                         return@launch
                     }
                 }
@@ -340,7 +390,7 @@ class MayaPermanentBrainService : Service() {
                     text = replyText,
                     persona = persona,
                     tone = tone,
-                    voiceEnabled = true
+                    voiceEnabled = voiceEngine.voiceReplyEnabled.value
                 )
                 if (!spoke) {
                     voiceEngine.notifyTurnCompletedWithoutSpeech()
@@ -400,7 +450,7 @@ class MayaPermanentBrainService : Service() {
         MayaBrainBus.setServiceRunning(false)
         voiceEngine.setPermanentBrainLoop(false)
         MayaBrainBus.notifyStoppedFromService()
-        if (speakFarewell) {
+        if (speakFarewell && voiceEngine.voiceReplyEnabled.value) {
             runCatching {
                 voiceEngine.speak(
                     text = "Permanent background listening band kar diya hai, Boss.",
@@ -492,11 +542,11 @@ class MayaPermanentBrainService : Service() {
 
         val isPaused = phase == BrainLoopPhase.PAUSED || voiceEngine.permanentBrainPaused.value
         val title = when (phase) {
-            BrainLoopPhase.LISTENING -> "Maya Brain LIVE • Sun rahi hoon, Boss"
-            BrainLoopPhase.THINKING -> "Maya Brain • Soch rahi hoon…"
+            BrainLoopPhase.LISTENING -> "Maya Silent Brain • Sun rahi hoon, Boss"
+            BrainLoopPhase.THINKING -> "Maya Brain • Kaam kar rahi hoon…"
             BrainLoopPhase.SPEAKING -> "Maya Brain • Jawab de rahi hoon…"
             BrainLoopPhase.PAUSED -> "Maya Brain • Paused"
-            BrainLoopPhase.RECONNECTING -> "Maya Brain • Mic reconnect ho raha hai…"
+            BrainLoopPhase.RECONNECTING -> "Maya Silent Brain • Mic ready ho raha hai…"
             BrainLoopPhase.OFF -> "Maya Brain"
         }
 
@@ -512,6 +562,9 @@ class MayaPermanentBrainService : Service() {
             .setContentIntent(contentPendingIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setDefaults(0)
+            .setVibrate(null)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .addAction(0, pauseActionLabel, togglePausePending)
@@ -522,6 +575,7 @@ class MayaPermanentBrainService : Service() {
     private fun ensureNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            runCatching { nm.deleteNotificationChannel(LEGACY_CHANNEL_ID) }
             val existing = nm.getNotificationChannel(CHANNEL_ID)
             if (existing == null) {
                 val channel = NotificationChannel(
@@ -530,6 +584,8 @@ class MayaPermanentBrainService : Service() {
                     NotificationManager.IMPORTANCE_LOW
                 ).apply {
                     description = getString(R.string.brain_notif_channel_desc)
+                    setSound(null, null)
+                    enableVibration(false)
                     setShowBadge(false)
                 }
                 nm.createNotificationChannel(channel)
@@ -546,7 +602,8 @@ class MayaPermanentBrainService : Service() {
     }
 
     companion object {
-        const val CHANNEL_ID = "maya_human_brain_channel"
+        private const val LEGACY_CHANNEL_ID = "maya_human_brain_channel"
+        const val CHANNEL_ID = "maya_silent_brain_channel_v2"
         const val NOTIFICATION_ID = 4108
 
         const val ACTION_START_BRAIN = "com.example.action.START_BRAIN"

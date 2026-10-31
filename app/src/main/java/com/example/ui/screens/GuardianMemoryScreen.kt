@@ -90,6 +90,8 @@ fun GuardianMemoryScreen(
     val permanentBrainEnabled by viewModel.permanentBrainEnabled.collectAsStateWithLifecycle()
     val permanentBrainPaused by viewModel.permanentBrainPaused.collectAsStateWithLifecycle()
     val brainLoopPhase by viewModel.brainLoopPhase.collectAsStateWithLifecycle()
+    val silentListeningEnabled by viewModel.silentListeningEnabled.collectAsStateWithLifecycle()
+    val voiceReplyEnabled by viewModel.voiceReplyEnabled.collectAsStateWithLifecycle()
 
     val guardianBrainPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -258,6 +260,52 @@ fun GuardianMemoryScreen(
                                         }
                                     }
                                 }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = stringResource(R.string.silent_listening_title),
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.silent_listening_subtitle),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = silentListeningEnabled,
+                                    onCheckedChange = viewModel::setSilentListeningEnabled,
+                                    modifier = Modifier.testTag("silent_listening_switch")
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = stringResource(R.string.post_work_voice_title),
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.post_work_voice_subtitle),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = voiceReplyEnabled,
+                                    onCheckedChange = viewModel::setVoiceReplyEnabled,
+                                    modifier = Modifier.testTag("guardian_voice_reply_switch")
+                                )
                             }
                         }
                     }

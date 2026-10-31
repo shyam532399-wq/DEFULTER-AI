@@ -82,6 +82,7 @@ class MayaCriticalUserJourneyTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         context.getSharedPreferences("maya_hud_prefs", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences("maya_api_key_vault", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences("maya_voice_prefs", Context.MODE_PRIVATE).edit().clear().commit()
         MayaBrainBus.drainBackgroundTurns()
         MayaBrainBus.setServiceRunning(false)
         database = MayaDatabase.createInMemory(context)
@@ -821,4 +822,97 @@ class MayaCriticalUserJourneyTest {
 
         composeTestRule.mainClock.autoAdvance = true
     }
+
+    @Test
+    fun cuj12_silentListening_suppressesRecognizerBeepsDuringListeningAndPostWork_andRestoresAudioCleanly() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+
+        // Ensure clean baseline unmuted volume before test
+        audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_UNMUTE, 0)
+        audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION, android.media.AudioManager.ADJUST_UNMUTE, 0)
+        audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_SYSTEM, android.media.AudioManager.ADJUST_UNMUTE, 0)
+        audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, 10, 0)
+        assertFalse(audioManager.isStreamMute(android.media.AudioManager.STREAM_MUSIC))
+
+        // 1. Silent Listening is ON by default & mutes recognizer beep streams during listening
+        val silentVoice = MayaVoiceEngine(context, recognitionAvailableOverride = true)
+        assertTrue("Silent listening must be ON by default", silentVoice.silentListeningEnabled.value)
+
+        silentVoice.setPermanentBrainLoop(
+            enabled = true,
+            onTranscript = {},
+            onError = {}
+        )
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+        assertTrue("STREAM_MUSIC must be muted during silent listening to prevent start/timeout beeps",
+            audioManager.isStreamMute(android.media.AudioManager.STREAM_MUSIC))
+        assertTrue("STREAM_NOTIFICATION must be muted during silent listening",
+            audioManager.isStreamMute(android.media.AudioManager.STREAM_NOTIFICATION))
+        assertTrue("STREAM_SYSTEM must be muted during silent listening",
+            audioManager.isStreamMute(android.media.AudioManager.STREAM_SYSTEM))
+
+        // Effective volume helper preserves pre-mute user volume (10) so telemetry never shows 0%
+        assertEquals(10, silentVoice.getEffectiveMusicVolume(audioManager))
+
+        // 2. Post-task completion (finishSpeakingForTest) keeps/re-engages mute BEFORE auto-resume listening
+        audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_UNMUTE, 0)
+        assertFalse(audioManager.isStreamMute(android.media.AudioManager.STREAM_MUSIC))
+        silentVoice.finishSpeakingForTest()
+        assertTrue("Post-work auto-resume must immediately mute STREAM_MUSIC before restarting SpeechRecognizer",
+            audioManager.isStreamMute(android.media.AudioManager.STREAM_MUSIC))
+
+        // 3. Turning off Permanent Brain / shutting down cleanly restores all streams unmuted
+        silentVoice.shutdown()
+        assertFalse("STREAM_MUSIC must be unmuted cleanly on shutdown",
+            audioManager.isStreamMute(android.media.AudioManager.STREAM_MUSIC))
+        assertFalse("STREAM_NOTIFICATION must be unmuted cleanly on shutdown",
+            audioManager.isStreamMute(android.media.AudioManager.STREAM_NOTIFICATION))
+        assertEquals(10, audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC))
+
+        // 4. Crash-recovery guard: if a killed process left streams muted, next MayaVoiceEngine init restores them
+        audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_MUTE, 0)
+        context.getSharedPreferences("maya_voice_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("streams_muted_by_maya", true)
+            .putInt("saved_pre_mute_music_vol", 10)
+            .commit()
+        val recoveredVoice = MayaVoiceEngine(context)
+        assertFalse("Crash recovery must restore muted streams on startup",
+            audioManager.isStreamMute(android.media.AudioManager.STREAM_MUSIC))
+        recoveredVoice.shutdown()
+
+        // 5. Verify Hinglish silent commands ("kaam karne ke baad sound band karo" / "beep band karo") & Guardian switches
+        val vm = buildTestViewModel("cuj12_boss")
+        composeTestRule.setContent {
+            MayaTheme {
+                GuardianMemoryScreen(
+                    viewModel = vm,
+                    profile = UserProfile(userId = "cuj12_boss", bossName = "Boss"),
+                    memoriesState = DataUiState.Success(emptyList()),
+                    remindersState = DataUiState.Success(emptyList()),
+                    touchGuardAlert = null,
+                    onBackToCockpit = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("silent_listening_switch").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("guardian_voice_reply_switch").performScrollTo().assertIsDisplayed()
+
+        assertTrue(vm.silentListeningEnabled.value)
+        assertTrue(vm.voiceReplyEnabled.value)
+
+        vm.sendCommand("kaam karne ke baad sound band karo")
+        assertTrue(vm.silentListeningEnabled.value)
+        assertFalse("Post-work voice reply should turn off on silent mode command", vm.voiceReplyEnabled.value)
+        assertTrue(vm.messages.value.last().text.contains("100% Silent Mode"))
+
+        vm.sendCommand("awaaz chalu karo")
+        assertTrue(vm.silentListeningEnabled.value)
+        assertTrue(vm.voiceReplyEnabled.value)
+    }
 }
+

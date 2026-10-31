@@ -57,7 +57,8 @@ class PhoneActionExecutor(private val context: Context) {
 
         val audio = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-        val curVol = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val curVol = MayaVoiceEngine.peekSharedInstance()?.getEffectiveMusicVolume(audio)
+            ?: audio.getStreamVolume(AudioManager.STREAM_MUSIC)
         val volPct = ((curVol * 100f) / maxVol).toInt()
 
         val ringer = when (audio.ringerMode) {
@@ -109,7 +110,8 @@ class PhoneActionExecutor(private val context: Context) {
             val bounded = percent.coerceIn(0, 100)
             val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
             val targetIndex = ((bounded / 100f) * maxVol).toInt()
-            audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetIndex, AudioManager.FLAG_SHOW_UI)
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetIndex, 0)
+            MayaVoiceEngine.peekSharedInstance()?.onExternalMediaVolumeChanged(targetIndex)
             ActionOutcome(true, "Media volume $bounded% kar diya, Boss.")
         } catch (e: Exception) {
             ActionOutcome(false, "Volume set nahi ho paya: ${e.localizedMessage}")

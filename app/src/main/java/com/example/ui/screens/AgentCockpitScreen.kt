@@ -143,7 +143,8 @@ fun AgentCockpitScreen(
     showApiKeyDialog: Boolean = false,
     permanentBrainEnabled: Boolean = false,
     permanentBrainPaused: Boolean = false,
-    brainLoopPhase: BrainLoopPhase = BrainLoopPhase.OFF
+    brainLoopPhase: BrainLoopPhase = BrainLoopPhase.OFF,
+    silentListeningEnabled: Boolean = true
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -268,6 +269,7 @@ fun AgentCockpitScreen(
                 permanentBrainEnabled = permanentBrainEnabled,
                 permanentBrainPaused = permanentBrainPaused,
                 brainLoopPhase = brainLoopPhase,
+                silentListeningEnabled = silentListeningEnabled,
                 hudSnapshot = hudSnapshot,
                 hudConfig = hudConfig,
                 audioLevel = audioLevel,
@@ -564,6 +566,7 @@ private fun PersonaCockpitHeader(
     permanentBrainEnabled: Boolean,
     permanentBrainPaused: Boolean,
     brainLoopPhase: BrainLoopPhase,
+    silentListeningEnabled: Boolean,
     hudSnapshot: SystemHudSnapshot,
     hudConfig: HudVisualConfig,
     audioLevel: Float,
@@ -644,8 +647,11 @@ private fun PersonaCockpitHeader(
                     )
                     Text(
                         text = when {
-                            permanentBrainEnabled -> "Brain Mode • ${brainLoopPhase.statusHinglish}"
-                            isListening -> "Sun rahi hoon… ('Hey Maya' ready)"
+                            permanentBrainEnabled -> {
+                                val silentTag = if (silentListeningEnabled) "Silent • " else ""
+                                "${silentTag}Brain Mode • ${brainLoopPhase.statusHinglish}"
+                            }
+                            isListening -> if (silentListeningEnabled) "Silent sun rahi hoon… (No Beep)" else "Sun rahi hoon… ('Hey Maya' ready)"
                             isSpeaking -> "Bol rahi hoon…"
                             else -> activePersona.tagline
                         },
@@ -760,6 +766,8 @@ private fun PersonaCockpitHeader(
                             Text(
                                 text = if (permanentBrainPaused) {
                                     "Human Brain Paused"
+                                } else if (silentListeningEnabled) {
+                                    "Silent Brain LIVE (No Beep) • ${brainLoopPhase.statusHinglish}"
                                 } else {
                                     "Background Brain LIVE • ${brainLoopPhase.statusHinglish}"
                                 },
@@ -767,7 +775,11 @@ private fun PersonaCockpitHeader(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "Bina mic dabaye seedha boliye — background me bhi sunke jawab degi",
+                                text = if (!voiceReplyEnabled) {
+                                    "100% Silent Mode — bina beep aur bina bole kaam hoga"
+                                } else {
+                                    "Zero-beep silent mic — bina kisi bip sound ke sun rahi hoon"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

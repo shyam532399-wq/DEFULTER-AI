@@ -110,6 +110,7 @@ private fun MayaAppShell(viewModel: MayaViewModel) {
     val isSpeaking by viewModel.isSpeaking.collectAsStateWithLifecycle()
     val partialTranscript by viewModel.partialTranscript.collectAsStateWithLifecycle()
     val voiceReplyEnabled by viewModel.voiceReplyEnabled.collectAsStateWithLifecycle()
+    val silentListeningEnabled by viewModel.silentListeningEnabled.collectAsStateWithLifecycle()
     val wakeWordEnabled by viewModel.wakeWordEnabled.collectAsStateWithLifecycle()
     val permanentBrainEnabled by viewModel.permanentBrainEnabled.collectAsStateWithLifecycle()
     val permanentBrainPaused by viewModel.permanentBrainPaused.collectAsStateWithLifecycle()
@@ -216,7 +217,8 @@ private fun MayaAppShell(viewModel: MayaViewModel) {
                                 showApiKeyDialog = showApiKeyDialog,
                                 permanentBrainEnabled = permanentBrainEnabled,
                                 permanentBrainPaused = permanentBrainPaused,
-                                brainLoopPhase = brainLoopPhase
+                                brainLoopPhase = brainLoopPhase,
+                                silentListeningEnabled = silentListeningEnabled
                             )
 
                             AgentTab.BOARD -> BoardStudioScreen(

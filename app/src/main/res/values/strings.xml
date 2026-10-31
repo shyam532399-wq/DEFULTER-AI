@@ -46,10 +46,15 @@
     <string name="cd_permanent_brain_pause">Permanent listening pause ya resume karein</string>
     <string name="cd_permanent_brain_stop">Permanent background listening band karein</string>
     <string name="brain_card_title">Human Brain — Permanent Background Listener</string>
-    <string name="brain_card_subtitle">Maya background me bhi hamesha sunegi aur insaan ke dimaag ki tarah turant bolkar jawab degi (Echo-Guard + Auto Turn-Taking).</string>
-    <string name="brain_notif_channel_name">Maya Human Brain Listener</string>
-    <string name="brain_notif_channel_desc">Maya ko background me lagatar sunne aur bolkar jawab dene deta hai</string>
+    <string name="brain_card_subtitle">Maya bina kisi beep sound ke background me lagatar chupchap sunegi aur insaan ke dimaag ki tarah kaam karegi (Silent Echo-Guard).</string>
+    <string name="brain_notif_channel_name">Maya Silent Brain Listener</string>
+    <string name="brain_notif_channel_desc">Maya ko bina kisi beep ya notification sound ke background me lagatar sunne deta hai</string>
     <string name="brain_action_pause">Pause</string>
     <string name="brain_action_resume">Resume</string>
     <string name="brain_action_stop">Band Karein</string>
+    <string name="silent_listening_title">Silent Listening (No Beep)</string>
+    <string name="silent_listening_subtitle">Listening ke waqt aur kaam poora hone ke baad mic ka beep sound poori tarah band rakhta hai.</string>
+    <string name="post_work_voice_title">Kaam ke Baad Voice Reply</string>
+    <string name="post_work_voice_subtitle">Band karne par Maya bina kuch bole 100% chupchap kaam poora karegi.</string>
+    <string name="silent_listening_badge">Silent • No Beep</string>
 </resources>
