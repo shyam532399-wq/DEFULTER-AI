@@ -48,7 +48,7 @@ enum class ApiProvider(
         id = "gemini",
         displayName = "Google Gemini",
         shortBadge = "Gemini",
-        keyPrefixHint = "AIzaSy...",
+        keyPrefixHint = "AQ.....",
         defaultBaseUrl = "https://generativelanguage.googleapis.com/v1beta",
         defaultModel = "gemini-2.5-flash",
         candidateModels = listOf(
@@ -109,7 +109,7 @@ enum class ApiProvider(
         fun detectFromKey(rawKey: String, currentSelection: ApiProvider? = null): ApiProvider? {
             val trimmed = rawKey.replace(Regex("\\s+"), "")
             return when {
-                trimmed.startsWith("AIza") -> GEMINI
+                trimmed.startsWith("AQ.") || trimmed.startsWith("AIza") -> GEMINI
                 trimmed.startsWith("gsk_") -> GROQ
                 trimmed.startsWith("sk-or-") -> OPENROUTER
                 trimmed.startsWith("sk-") -> {
@@ -226,7 +226,7 @@ class LiveHttpApiKeyVerifier(
                     JSONObject(bodyStr).optJSONObject("error")?.optString("message").orEmpty()
                 }.getOrDefault("")
                 val readable = when (resp.code) {
-                    400, 401, 403 -> "Gemini API key invalid ya unauthorized hai (${resp.code}). Sahi 'AIza...' key daalein, Boss."
+                    400, 401, 403 -> "Gemini API key invalid ya unauthorized hai (${resp.code}). Sahi 'AQ....' ya 'AIza...' key daalein, Boss."
                     429 -> "Gemini API quota limit hit ho gayi hai (429). Thodi der baad ya doosri key try karein."
                     else -> "Gemini server se connect nahi hua (${resp.code}): ${apiMsg.ifBlank { "connection error" }}"
                 }

@@ -68,4 +68,15 @@
     <string name="cd_close_full_maya_hud">Full-screen Maya AI HUD band karein (ESC)</string>
     <string name="cd_toggle_particles">AI network particle constellation aur scanlines chalu ya band karein</string>
     <string name="cd_toggle_visualizer_mode">Flowing wave aur 24-bar audio visualizer badlein</string>
+    <string name="notif_listener_label">Maya WhatsApp Reader</string>
+    <string name="loading_one_moment">One moment… loading 💗</string>
+    <string name="setup_maya_title">Set up Maya</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_scan">Scan</string>
+    <string name="nav_memories">Memories</string>
+    <string name="nav_chat">Chat</string>
+    <string name="cd_home_menu">Open Maya quick menu and setup</string>
+    <string name="cd_home_notifications">View Maya notifications and activity</string>
+    <string name="cd_center_mic_fab">Tap to talk to Maya</string>
+    <string name="ask_maya_placeholder">Ask Maya anything…</string>
 </resources>

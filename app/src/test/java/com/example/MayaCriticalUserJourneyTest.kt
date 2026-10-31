@@ -83,6 +83,7 @@ class MayaCriticalUserJourneyTest {
         context.getSharedPreferences("maya_hud_prefs", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences("maya_api_key_vault", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences("maya_voice_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences("maya_setup_prefs", Context.MODE_PRIVATE).edit().clear().commit()
         MayaBrainBus.drainBackgroundTurns()
         MayaBrainBus.setServiceRunning(false)
         database = MayaDatabase.createInMemory(context)
@@ -98,7 +99,8 @@ class MayaCriticalUserJourneyTest {
     private fun buildTestViewModel(
         uid: String = MayaRepository.LOCAL_BOSS_ID,
         customKeyStore: ApiKeyConfigStore? = null,
-        customInferenceClient: CustomApiInferenceClient = CustomApiInferenceClient()
+        customInferenceClient: CustomApiInferenceClient = CustomApiInferenceClient(),
+        customLiveInfoClient: LiveInfoClient = LiveInfoClient()
     ): MayaViewModel {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val keyStore = customKeyStore ?: ApiKeyConfigStore(context)
@@ -107,7 +109,7 @@ class MayaCriticalUserJourneyTest {
             phoneExecutor = PhoneActionExecutor(context),
             voiceEngine = MayaVoiceEngine(context),
             aiBrain = MayaAiBrain(apiKeyStore = keyStore, customInferenceClient = customInferenceClient),
-            liveInfoClient = LiveInfoClient(),
+            liveInfoClient = customLiveInfoClient,
             currentUserId = uid,
             initialDisplayName = "Boss",
             apiKeyStore = keyStore
@@ -986,6 +988,131 @@ class MayaCriticalUserJourneyTest {
         composeTestRule.onNodeWithTag("close_full_maya_hud_button").performClick()
         composeTestRule.waitForIdle()
         assertFalse(vm.hudConfig.value.fullHudVisible)
+    }
+
+    @Test
+    fun cuj14_videoExactSetupWizard_aqGeminiKey_andMayaHomeDashboard() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.POST_NOTIFICATIONS
+        )
+
+        // 1. Verify newer "AQ." Google AI Studio Gemini key prefix auto-detection
+        assertEquals(ApiProvider.GEMINI, ApiProvider.detectFromKey("AQ.Ab8RN6IMayaVideoKey2026"))
+        assertEquals("AQ.....", ApiProvider.GEMINI.keyPrefixHint)
+
+        val fakeVerifier = com.example.domain.ApiKeyVerifier { provider, _, _, _ ->
+            Result.success(
+                ApiKeyVerificationResult(
+                    resolvedModel = provider.defaultModel,
+                    resolvedImageModel = "gemini-2.5-flash-image"
+                )
+            )
+        }
+        val mockWeatherHttp = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val url = req.url.toString()
+                val media = "application/json".toMediaType()
+                val payload = if (url.contains("geocoding-api.open-meteo.com")) {
+                    """{"results":[{"name":"New Delhi","latitude":28.6139,"longitude":77.2090}]}"""
+                } else {
+                    """{"current":{"temperature_2m":17.1,"relative_humidity_2m":98,"weather_code":0}}"""
+                }
+                Response.Builder()
+                    .request(req)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(payload.toResponseBody(media))
+                    .build()
+            }
+            .build()
+
+        val keyStore = ApiKeyConfigStore(app, verifier = fakeVerifier)
+        val vm = buildTestViewModel(
+            uid = "cuj14_boss",
+            customKeyStore = keyStore,
+            customLiveInfoClient = LiveInfoClient(httpClient = mockWeatherHttp)
+        )
+
+        composeTestRule.mainClock.autoAdvance = false
+        composeTestRule.setContent {
+            MayaRootApp(viewModel = vm, enableColdLaunchOnboarding = true)
+        }
+        composeTestRule.mainClock.advanceTimeBy(100)
+
+        // 2. Cold-launch branded loading splash ("One moment… loading 💗")
+        composeTestRule.onNodeWithTag("maya_cold_launch_splash").assertIsDisplayed()
+
+        // Advance past 750ms splash -> opens Step 1 of 3 ("Set up Maya" -> "Add your Gemini key")
+        composeTestRule.mainClock.advanceTimeBy(800)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(150)
+
+        composeTestRule.onNodeWithTag("maya_setup_wizard_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Add your Gemini key").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("wizard_get_free_key_button").assertIsDisplayed()
+
+        // Enter "AQ." Gemini key, test it, then Save & continue -> advances to Step 2 of 3
+        composeTestRule.onNodeWithTag("wizard_api_key_input").performTextInput("AQ.Ab8RN6IMayaVideoKey2026")
+        composeTestRule.mainClock.advanceTimeBy(100)
+        composeTestRule.onNodeWithTag("wizard_test_key_button").performClick()
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(200)
+        assertTrue(vm.wizardKeyNotice.value?.contains("Key verified") == true)
+
+        composeTestRule.onNodeWithTag("wizard_save_continue_button").performClick()
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        composeTestRule.mainClock.advanceTimeBy(200)
+
+        // 3. Step 2 of 3 ("Let Maya use your phone")
+        assertEquals(2, vm.setupWizardStep.value)
+        composeTestRule.onNodeWithText("Let Maya use your phone").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("wizard_perm_row_mic").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("wizard_allow_all_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(150)
+        composeTestRule.onNodeWithTag("wizard_step2_continue_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(150)
+
+        // 4. Step 3 of 3 ("Keep Maya alive in the background")
+        assertEquals(3, vm.setupWizardStep.value)
+        composeTestRule.onNodeWithText("Keep Maya alive in the background").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("wizard_sys_battery").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("wizard_sys_notifications").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("wizard_sys_accessibility").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("wizard_finish_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(200)
+
+        // 5. Transitions into Video-Exact M.A.Y.A Home Dashboard + 5-Item Bottom Bar
+        assertTrue(vm.setupCompleted.value)
+        assertFalse(vm.showSetupWizard.value)
+
+        // Wait briefly for mock Open-Meteo weather roundtrip (17° / Clear / 💧 98%)
+        val weatherDeadline = System.currentTimeMillis() + 2000L
+        while (System.currentTimeMillis() < weatherDeadline && !vm.homeWeather.value.isLoaded) {
+            Thread.sleep(25)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            composeTestRule.mainClock.advanceTimeBy(100)
+        }
+        composeTestRule.mainClock.advanceTimeBy(150)
+
+        assertEquals(17, vm.homeWeather.value.tempCelsius)
+        assertEquals("Clear", vm.homeWeather.value.conditionLabel)
+        assertEquals(98, vm.homeWeather.value.humidityPercent)
+
+        composeTestRule.onNodeWithTag("maya_reactive_orb").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("home_pill_music").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("home_pill_study").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("home_pill_journal").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("home_card_weather").assertIsDisplayed()
+        composeTestRule.onNodeWithText("17°").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("home_card_today").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("home_card_mood").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_center_mic_fab").assertIsDisplayed()
+
+        composeTestRule.mainClock.autoAdvance = true
     }
 }
 

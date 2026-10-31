@@ -20,12 +20,20 @@ data class LiveInfoResult(
     val boardMarkdown: String? = null
 )
 
-class LiveInfoClient {
+data class HomeWeatherSnapshot(
+    val isLoaded: Boolean = false,
+    val tempCelsius: Int = 0,
+    val conditionLabel: String = "No data",
+    val humidityPercent: Int = 0,
+    val locationName: String = ""
+)
 
-    private val httpClient = OkHttpClient.Builder()
+class LiveInfoClient(
+    private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
+) {
 
     private fun jsonRequest(url: String): Request = Request.Builder()
         .url(url)
@@ -544,6 +552,73 @@ class LiveInfoClient {
         } catch (_: Exception) {
             LiveInfoResult(false, "GitHub API call me network error aaya, Boss.")
         }
+    }
+
+    suspend fun fetchHomeWeatherCard(
+        latitude: Double? = null,
+        longitude: Double? = null,
+        fallbackCity: String = "New Delhi"
+    ): HomeWeatherSnapshot = withContext(Dispatchers.IO) {
+        try {
+            var resolvedLat = latitude
+            var resolvedLon = longitude
+            var resolvedCity = fallbackCity
+
+            if (resolvedLat == null || resolvedLon == null) {
+                val encoded = URLEncoder.encode(fallbackCity.trim().ifBlank { "New Delhi" }, "UTF-8")
+                val geoReq = jsonRequest(
+                    "https://geocoding-api.open-meteo.com/v1/search?name=$encoded&count=1&language=en&format=json"
+                )
+                httpClient.newCall(geoReq).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val results = JSONObject(resp.body?.string().orEmpty()).optJSONArray("results")
+                        if (results != null && results.length() > 0) {
+                            val first = results.getJSONObject(0)
+                            resolvedLat = first.optDouble("latitude", 28.6139)
+                            resolvedLon = first.optDouble("longitude", 77.2090)
+                            resolvedCity = first.optString("name", fallbackCity)
+                        }
+                    }
+                }
+            }
+
+            val lat = resolvedLat ?: 28.6139
+            val lon = resolvedLon ?: 77.2090
+            val weatherUrl = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
+                "&current=temperature_2m,relative_humidity_2m,weather_code"
+
+            val wJson = httpClient.newCall(jsonRequest(weatherUrl)).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext HomeWeatherSnapshot()
+                JSONObject(resp.body?.string().orEmpty())
+            }
+
+            val current = wJson.optJSONObject("current") ?: return@withContext HomeWeatherSnapshot()
+            val tempRounded = kotlin.math.round(current.optDouble("temperature_2m", 0.0)).toInt()
+            val humidity = current.optInt("relative_humidity_2m", 0).coerceIn(0, 100)
+            val code = current.optInt("weather_code", 0)
+
+            HomeWeatherSnapshot(
+                isLoaded = true,
+                tempCelsius = tempRounded,
+                conditionLabel = weatherCodeEnglishShort(code),
+                humidityPercent = humidity,
+                locationName = resolvedCity
+            )
+        } catch (_: Exception) {
+            HomeWeatherSnapshot()
+        }
+    }
+
+    private fun weatherCodeEnglishShort(code: Int): String = when (code) {
+        0 -> "Clear"
+        1, 2 -> "Partly cloudy"
+        3 -> "Cloudy"
+        45, 48 -> "Fog"
+        51, 53, 55, 61, 63, 65 -> "Rain"
+        71, 73, 75 -> "Snow"
+        80, 81, 82 -> "Showers"
+        95, 96, 99 -> "Thunderstorm"
+        else -> "Clear"
     }
 
     private fun weatherCodeHinglish(code: Int): String = when (code) {

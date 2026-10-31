@@ -25,6 +25,12 @@ import com.example.domain.BrainLoopPhase
 import com.example.domain.DeviceTelemetry
 import com.example.domain.GitHubRemoteSkill
 import com.example.domain.GitHubSkillStoreClient
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.location.LocationManager
+import androidx.core.content.ContextCompat
+import com.example.domain.HomeWeatherSnapshot
 import com.example.domain.HudEffectTheme
 import com.example.domain.HudVisualConfig
 import com.example.domain.LiveInfoClient
@@ -214,6 +220,26 @@ class MayaViewModel(
     private val _showApiKeyDialog = MutableStateFlow(false)
     val showApiKeyDialog: StateFlow<Boolean> = _showApiKeyDialog.asStateFlow()
 
+    private val setupPrefs = phoneExecutor.appContext.getSharedPreferences("maya_setup_prefs", Context.MODE_PRIVATE)
+
+    private val _setupCompleted = MutableStateFlow(
+        setupPrefs.getBoolean("setup_completed", false) ||
+            apiKeyStore.status.value is ApiKeyConnectionStatus.Connected
+    )
+    val setupCompleted: StateFlow<Boolean> = _setupCompleted.asStateFlow()
+
+    private val _showSetupWizard = MutableStateFlow(false)
+    val showSetupWizard: StateFlow<Boolean> = _showSetupWizard.asStateFlow()
+
+    private val _setupWizardStep = MutableStateFlow(1)
+    val setupWizardStep: StateFlow<Int> = _setupWizardStep.asStateFlow()
+
+    private val _wizardKeyNotice = MutableStateFlow<String?>(null)
+    val wizardKeyNotice: StateFlow<String?> = _wizardKeyNotice.asStateFlow()
+
+    private val _homeWeather = MutableStateFlow(HomeWeatherSnapshot())
+    val homeWeather: StateFlow<HomeWeatherSnapshot> = _homeWeather.asStateFlow()
+
     private val _needsBrainMicPermissionEvent = MutableStateFlow(false)
     val needsBrainMicPermissionEvent: StateFlow<Boolean> = _needsBrainMicPermissionEvent.asStateFlow()
 
@@ -321,6 +347,106 @@ class MayaViewModel(
     fun testConnectedApiKey() {
         _showApiKeyDialog.value = false
         sendCommand("Maya, ek chhoti line me confirm karo ki meri API key live kaam kar rahi hai.")
+    }
+
+    fun openSetupWizard(step: Int = 1) {
+        _wizardKeyNotice.value = null
+        _setupWizardStep.value = step.coerceIn(1, 3)
+        _showSetupWizard.value = true
+    }
+
+    fun setSetupWizardStep(step: Int) {
+        _wizardKeyNotice.value = null
+        _setupWizardStep.value = step.coerceIn(1, 3)
+    }
+
+    fun skipApiKeyStepInWizard() {
+        _wizardKeyNotice.value = null
+        _setupWizardStep.value = 2
+    }
+
+    fun completeSetupWizard() {
+        setupPrefs.edit().putBoolean("setup_completed", true).apply()
+        _setupCompleted.value = true
+        _showSetupWizard.value = false
+        refreshTelemetry()
+        refreshHomeWeather(force = true)
+    }
+
+    fun connectApiKeyFromWizard(rawKey: String, testOnly: Boolean) {
+        val trimmed = rawKey.trim()
+        if (trimmed.isBlank()) {
+            if (!testOnly && apiKeyStatus.value is ApiKeyConnectionStatus.Connected) {
+                _setupWizardStep.value = 2
+                return
+            }
+            _wizardKeyNotice.value = "Please paste your Gemini API key (starts with AQ. or AIza)."
+            return
+        }
+        val detected = ApiProvider.detectFromKey(trimmed, ApiProvider.GEMINI) ?: ApiProvider.GEMINI
+        _wizardKeyNotice.value = null
+        viewModelScope.launch {
+            val res = apiKeyStore.verifyAndConnect(
+                rawKey = trimmed,
+                selectedProvider = detected
+            )
+            res.fold(
+                onSuccess = { connected ->
+                    if (testOnly) {
+                        _wizardKeyNotice.value = "✓ Key verified (${connected.activeModel}) — ready to save & continue."
+                    } else {
+                        _wizardKeyNotice.value = null
+                        _setupWizardStep.value = 2
+                    }
+                },
+                onFailure = { err ->
+                    _wizardKeyNotice.value = err.localizedMessage ?: "Could not verify key. Check your internet and key."
+                }
+            )
+        }
+    }
+
+    fun refreshHomeWeather(force: Boolean = false) {
+        if (!force && _homeWeather.value.isLoaded) return
+        viewModelScope.launch {
+            val ctx = phoneExecutor.appContext
+            val hasCoarse = ContextCompat.checkSelfPermission(
+                ctx,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            val hasFine = ContextCompat.checkSelfPermission(
+                ctx,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+            var lat: Double? = null
+            var lon: Double? = null
+            if (hasCoarse || hasFine) {
+                runCatching {
+                    val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+                    val loc = lm?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                        ?: lm?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                    if (loc != null) {
+                        lat = loc.latitude
+                        lon = loc.longitude
+                    }
+                }
+            }
+            val snap = liveInfoClient.fetchHomeWeatherCard(latitude = lat, longitude = lon)
+            if (snap.isLoaded) {
+                _homeWeather.value = snap
+            }
+        }
+    }
+
+    fun cycleMoodTone() {
+        val current = MayaTone.fromId(currentProfile().tone)
+        val next = when (current) {
+            MayaTone.CALM -> MayaTone.EXCITED
+            MayaTone.EXCITED -> MayaTone.SOFT
+            MayaTone.SOFT -> MayaTone.CALM
+        }
+        switchTone(next)
     }
 
     fun toggleVoiceReply() {
