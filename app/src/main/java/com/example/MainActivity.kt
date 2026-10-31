@@ -52,6 +52,7 @@ import com.example.data.model.UserProfile
 import com.example.data.repository.MayaRepository
 import com.example.ui.MayaViewModel
 import com.example.ui.components.DraggableFloatingMiniHud
+import com.example.ui.components.MayaFullAiHudOverlay
 import com.example.ui.screens.AgentCockpitScreen
 import com.example.ui.screens.BoardStudioScreen
 import com.example.ui.screens.GuardianMemoryScreen
@@ -124,6 +125,8 @@ private fun MayaAppShell(viewModel: MayaViewModel) {
     val hudSnapshot by viewModel.hudSnapshot.collectAsStateWithLifecycle()
     val hudConfig by viewModel.hudConfig.collectAsStateWithLifecycle()
     val audioLevel by viewModel.audioLevel.collectAsStateWithLifecycle()
+    val micLevel by viewModel.micLevel.collectAsStateWithLifecycle()
+    val speakerAmplitude by viewModel.speakerAmplitude.collectAsStateWithLifecycle()
     val spectrumBands by viewModel.spectrumBands.collectAsStateWithLifecycle()
     val gitHubSkillStoreState by viewModel.gitHubSkillStoreState.collectAsStateWithLifecycle()
     val apiKeyStatus by viewModel.apiKeyStatus.collectAsStateWithLifecycle()
@@ -212,6 +215,8 @@ private fun MayaAppShell(viewModel: MayaViewModel) {
                                 hudSnapshot = hudSnapshot,
                                 hudConfig = hudConfig,
                                 audioLevel = audioLevel,
+                                micLevel = micLevel,
+                                speakerAmplitude = speakerAmplitude,
                                 spectrumBands = spectrumBands,
                                 apiKeyStatus = apiKeyStatus,
                                 showApiKeyDialog = showApiKeyDialog,
@@ -281,6 +286,55 @@ private fun MayaAppShell(viewModel: MayaViewModel) {
                         }
                     }
                 }
+            }
+
+            // Full-Screen Frameless Maya AI HUD Mode (`ui/main_window.py` in `HunterisLive-1/maya-ui`)
+            if (hudConfig.fullHudVisible) {
+                MayaFullAiHudOverlay(
+                    persona = activePersona,
+                    snapshot = hudSnapshot,
+                    apiKeyStatus = apiKeyStatus,
+                    micLevel = micLevel,
+                    speakerAmplitude = speakerAmplitude,
+                    audioLevel = audioLevel,
+                    isListening = isListening,
+                    isThinking = isThinking,
+                    isSpeaking = isSpeaking,
+                    guardArmed = profile.guardArmed || profile.touchGuardArmed,
+                    permanentBrainEnabled = permanentBrainEnabled,
+                    particlesEnabled = hudConfig.particlesEnabled,
+                    floatingHudVisible = hudConfig.floatingHudVisible,
+                    onTapOrbOrMic = {
+                        when {
+                            isListening -> viewModel.stopVoiceInput()
+                            isSpeaking -> viewModel.toggleVoiceReply()
+                            else -> {
+                                val granted = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (granted) viewModel.startVoiceInput()
+                                else floatingMicPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    },
+                    onToggleParticles = viewModel::toggleParticlesEnabled,
+                    onTogglePermanentBrain = {
+                        val granted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                        viewModel.togglePermanentBrainMode(
+                            hasAudioPermission = granted,
+                            onNeedPermission = { floatingMicPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+                        )
+                    },
+                    onSwitchToFloatingMiniHud = {
+                        viewModel.setFullHudVisible(false)
+                        viewModel.setFloatingHudVisible(true)
+                    },
+                    onDismiss = { viewModel.setFullHudVisible(false) }
+                )
             }
         }
     }

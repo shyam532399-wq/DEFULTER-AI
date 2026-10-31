@@ -225,6 +225,8 @@ class MayaViewModel(
     val permanentBrainPaused: StateFlow<Boolean> = voiceEngine.permanentBrainPaused
     val brainLoopPhase: StateFlow<BrainLoopPhase> = voiceEngine.brainLoopPhase
     val audioLevel: StateFlow<Float> = voiceEngine.audioLevel
+    val micLevel: StateFlow<Float> = voiceEngine.micLevel
+    val speakerAmplitude: StateFlow<Float> = voiceEngine.speakerAmplitude
     val spectrumBands: StateFlow<List<Float>> = voiceEngine.spectrumBands
     val autopilotConnected: StateFlow<Boolean> = MayaAccessibilityService.isConnected
 
@@ -522,6 +524,53 @@ class MayaViewModel(
             setHudEffectTheme(HudEffectTheme.HOLOGRAPHIC_SCAN)
             setHudExpanded(true)
             appendMayaBubble("Holographic Scanline HUD lag gaya, ${currentProfile().bossName}.", badge = "Holographic HUD")
+            return
+        }
+        if (lowerCmd in setOf(
+                "full hud",
+                "full hud on",
+                "full hud on karo",
+                "full hud kholo",
+                "maya hud",
+                "maya hud on",
+                "maya hud kholo",
+                "maya ui",
+                "maya ui mode",
+                "hud screen kholo"
+            )
+        ) {
+            setFullHudVisible(true)
+            appendMayaBubble(
+                "Full Maya AI HUD (System Metrics, AI Status, Wave Mic aur Particle Network) khol diya hai, ${currentProfile().bossName}.",
+                badge = "Full Maya HUD"
+            )
+            return
+        }
+        if (lowerCmd in setOf("full hud off", "full hud band", "full hud band karo", "maya hud band karo", "exit hud")) {
+            setFullHudVisible(false)
+            appendMayaBubble("Full Maya HUD band kar diya, ${currentProfile().bossName}.", badge = "HUD Closed")
+            return
+        }
+        if (lowerCmd in setOf("particles on", "particles on karo", "ai particles on", "particle engine on")) {
+            setParticlesEnabled(true)
+            appendMayaBubble("AI Particle Network aur scanlines active hain, ${currentProfile().bossName}.", badge = "Particles ON")
+            return
+        }
+        if (lowerCmd in setOf("particles off", "particles band", "particles band karo", "ai particles off")) {
+            setParticlesEnabled(false)
+            appendMayaBubble("Background AI Particles band kar diye hain, ${currentProfile().bossName}.", badge = "Particles OFF")
+            return
+        }
+        if (lowerCmd in setOf("wave visualizer", "wave mode", "wave mic", "wave mode on karo")) {
+            setWaveVisualizerMode(true)
+            setHudExpanded(true)
+            appendMayaBubble("3-Layer Flowing Wave Mic Visualizer lag gaya, ${currentProfile().bossName}.", badge = "Wave Mic")
+            return
+        }
+        if (lowerCmd in setOf("spectrum mode", "24 bar mode", "bars visualizer", "bar mode on karo")) {
+            setWaveVisualizerMode(false)
+            setHudExpanded(true)
+            appendMayaBubble("24-Bar Neon Spectrum Visualizer lag gaya, ${currentProfile().bossName}.", badge = "24-Bar Spectrum")
             return
         }
 
@@ -1631,9 +1680,59 @@ class MayaViewModel(
         systemHudMonitor.saveVisualConfig(updated)
     }
 
+    fun setFullHudVisible(visible: Boolean) {
+        val updated = _hudConfig.value.copy(fullHudVisible = visible)
+        _hudConfig.value = updated
+    }
+
+    fun toggleFullHud() {
+        setFullHudVisible(!_hudConfig.value.fullHudVisible)
+    }
+
+    fun setParticlesEnabled(enabled: Boolean) {
+        val updated = _hudConfig.value.copy(particlesEnabled = enabled)
+        _hudConfig.value = updated
+        systemHudMonitor.saveVisualConfig(updated)
+    }
+
+    fun toggleParticlesEnabled() {
+        setParticlesEnabled(!_hudConfig.value.particlesEnabled)
+    }
+
+    fun setWaveVisualizerMode(waveMode: Boolean) {
+        val updated = _hudConfig.value.copy(waveVisualizerMode = waveMode)
+        _hudConfig.value = updated
+        systemHudMonitor.saveVisualConfig(updated)
+    }
+
+    fun toggleVisualizerMode() {
+        setWaveVisualizerMode(!_hudConfig.value.waveVisualizerMode)
+    }
+
     private fun applyHudControlTarget(rawTarget: String): String {
         val t = rawTarget.trim().lowercase(Locale.ROOT)
         return when {
+            t.contains("full_off") || t.contains("exit_hud") -> {
+                setFullHudVisible(false)
+                "Full Maya HUD OFF"
+            }
+            t.contains("full") || t.contains("maya_ui") -> {
+                setFullHudVisible(true)
+                "Full Maya HUD ON"
+            }
+            t.contains("particle_off") -> {
+                setParticlesEnabled(false)
+                "Particles OFF"
+            }
+            t.contains("particle") -> {
+                setParticlesEnabled(true)
+                "Particles ON"
+            }
+            t.contains("wave") -> {
+                setWaveVisualizerMode(true)
+                setHudExpanded(true)
+                "Wave Visualizer"
+            }
             t.contains("float_off") || t.contains("floating_off") -> {
                 setFloatingHudVisible(false)
                 "Floating HUD OFF"

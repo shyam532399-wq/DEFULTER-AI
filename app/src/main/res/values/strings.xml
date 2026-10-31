@@ -57,4 +57,15 @@
     <string name="post_work_voice_title">Kaam ke Baad Voice Reply</string>
     <string name="post_work_voice_subtitle">Band karne par Maya bina kuch bole 100% chupchap kaam poora karegi.</string>
     <string name="silent_listening_badge">Silent • No Beep</string>
+    <string name="hud_full_mode_chip">Full Maya HUD</string>
+    <string name="hud_left_panel_title">SYSTEM METRICS</string>
+    <string name="hud_right_panel_title">AI STATUS</string>
+    <string name="hud_signature_text">HunterIsLive</string>
+    <string name="hud_wave_mode_label">Wave Mic</string>
+    <string name="hud_bars_mode_label">24-Bar</string>
+    <string name="hud_particles_label">AI Particles</string>
+    <string name="cd_open_full_maya_hud">Full-screen Maya AI HUD mode kholein</string>
+    <string name="cd_close_full_maya_hud">Full-screen Maya AI HUD band karein (ESC)</string>
+    <string name="cd_toggle_particles">AI network particle constellation aur scanlines chalu ya band karein</string>
+    <string name="cd_toggle_visualizer_mode">Flowing wave aur 24-bar audio visualizer badlein</string>
 </resources>

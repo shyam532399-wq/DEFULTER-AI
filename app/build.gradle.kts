@@ -82,6 +82,7 @@ secrets {
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
 
 tasks.withType<Test> {
+  maxHeapSize = "1536m"
   failFast = true
   timeout.set(Duration.ofMinutes(2))
   testLogging {

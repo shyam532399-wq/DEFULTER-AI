@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Key
@@ -115,11 +116,13 @@ import com.example.ui.MissionState
 import com.example.ui.PendingConfirmation
 import com.example.ui.components.ApiKeyConnectDialog
 import com.example.ui.components.MayaReactiveOrb
+import com.example.ui.components.MayaWaveMicVisualizer
 import com.example.ui.components.NeonAudioSpectrumVisualizer
 import com.example.ui.components.QuantumHudContainer
 import com.example.ui.components.RememberLiveFpsReporter
 import com.example.ui.components.SystemMonitoringHudPanel
 import com.example.ui.theme.LocalPersonaAccent
+import java.util.Locale
 
 @Composable
 fun AgentCockpitScreen(
@@ -138,6 +141,8 @@ fun AgentCockpitScreen(
     hudSnapshot: SystemHudSnapshot = SystemHudSnapshot(),
     hudConfig: HudVisualConfig = HudVisualConfig(),
     audioLevel: Float = 0f,
+    micLevel: Float = 0f,
+    speakerAmplitude: Float = 0f,
     spectrumBands: List<Float> = List(24) { 0.08f },
     apiKeyStatus: ApiKeyConnectionStatus = ApiKeyConnectionStatus.BuiltIn,
     showApiKeyDialog: Boolean = false,
@@ -273,6 +278,8 @@ fun AgentCockpitScreen(
                 hudSnapshot = hudSnapshot,
                 hudConfig = hudConfig,
                 audioLevel = audioLevel,
+                micLevel = micLevel,
+                speakerAmplitude = speakerAmplitude,
                 spectrumBands = spectrumBands,
                 onSelectPersona = viewModel::switchPersona,
                 onSelectTone = viewModel::switchTone,
@@ -306,6 +313,9 @@ fun AgentCockpitScreen(
                 onToggleHudExpanded = viewModel::toggleHudExpanded,
                 onSelectHudTheme = viewModel::setHudEffectTheme,
                 onToggleFloatingHud = viewModel::toggleFloatingHud,
+                onOpenFullHud = { viewModel.setFullHudVisible(true) },
+                onToggleParticles = viewModel::toggleParticlesEnabled,
+                onToggleVisualizerMode = viewModel::toggleVisualizerMode,
                 onPinHudReport = viewModel::pinSystemHudReportToBoard,
                 apiKeyStatus = apiKeyStatus,
                 onOpenApiKeyDialog = viewModel::openApiKeyDialog,
@@ -570,6 +580,8 @@ private fun PersonaCockpitHeader(
     hudSnapshot: SystemHudSnapshot,
     hudConfig: HudVisualConfig,
     audioLevel: Float,
+    micLevel: Float,
+    speakerAmplitude: Float,
     spectrumBands: List<Float>,
     onSelectPersona: (MayaPersona) -> Unit,
     onSelectTone: (MayaTone) -> Unit,
@@ -582,6 +594,9 @@ private fun PersonaCockpitHeader(
     onToggleHudExpanded: () -> Unit,
     onSelectHudTheme: (HudEffectTheme) -> Unit,
     onToggleFloatingHud: () -> Unit,
+    onOpenFullHud: () -> Unit,
+    onToggleParticles: () -> Unit,
+    onToggleVisualizerMode: () -> Unit,
     onPinHudReport: () -> Unit,
     apiKeyStatus: ApiKeyConnectionStatus,
     onOpenApiKeyDialog: () -> Unit,
@@ -601,6 +616,7 @@ private fun PersonaCockpitHeader(
 
     QuantumHudContainer(
         effectTheme = hudConfig.effectTheme,
+        particlesEnabled = hudConfig.particlesEnabled,
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 8.dp)
@@ -661,6 +677,19 @@ private fun PersonaCockpitHeader(
                 }
 
                 IconButton(
+                    onClick = onOpenFullHud,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("header_open_full_hud_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Fullscreen,
+                        contentDescription = stringResource(R.string.cd_open_full_maya_hud),
+                        tint = accent.secondary
+                    )
+                }
+
+                IconButton(
                     onClick = onToggleHudExpanded,
                     modifier = Modifier
                         .size(48.dp)
@@ -700,7 +729,7 @@ private fun PersonaCockpitHeader(
                 }
             }
 
-            // Expandable HunterisLive-1/maya-ui Centerpiece Orb + Neon Spectrum + System Telemetry HUD
+            // Expandable HunterisLive-1/maya-ui Centerpiece Orb + Wave & Spectrum Visualizers + System Telemetry HUD
             AnimatedVisibility(visible = hudConfig.hudExpanded && !compactViewport) {
                 Column(modifier = Modifier.padding(top = 10.dp)) {
                     Row(
@@ -708,21 +737,38 @@ private fun PersonaCockpitHeader(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
+                        val orbAmp = if (isSpeaking && speakerAmplitude > 0f) speakerAmplitude else audioLevel
                         MayaReactiveOrb(
-                            audioLevel = audioLevel,
+                            audioLevel = orbAmp,
                             isListening = isListening,
                             isThinking = isThinking,
                             isSpeaking = isSpeaking,
                             guardArmed = guardArmed,
                             onTapOrb = onTapCenterpieceOrb,
-                            modifier = Modifier.size(86.dp)
+                            centerLabel = activePersona.displayName.uppercase(Locale.ROOT),
+                            modifier = Modifier.size(90.dp)
                         )
-                        NeonAudioSpectrumVisualizer(
-                            spectrumBands = spectrumBands,
-                            isListening = isListening,
-                            isSpeaking = isSpeaking,
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier.weight(1f)
-                        )
+                        ) {
+                            NeonAudioSpectrumVisualizer(
+                                spectrumBands = spectrumBands,
+                                isListening = isListening,
+                                isSpeaking = isSpeaking,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            AnimatedVisibility(visible = hudConfig.waveVisualizerMode) {
+                                MayaWaveMicVisualizer(
+                                    micLevel = if (isListening) micLevel.coerceAtLeast(audioLevel) else audioLevel,
+                                    isListening = isListening,
+                                    isSpeaking = isSpeaking,
+                                    waveHeightDp = 42,
+                                    showHeaderLabel = false,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -733,7 +779,12 @@ private fun PersonaCockpitHeader(
                         floatingHudVisible = hudConfig.floatingHudVisible,
                         onSelectTheme = onSelectHudTheme,
                         onToggleFloatingHud = onToggleFloatingHud,
-                        onPinDiagnosticToBoard = onPinHudReport
+                        onPinDiagnosticToBoard = onPinHudReport,
+                        particlesEnabled = hudConfig.particlesEnabled,
+                        waveVisualizerMode = hudConfig.waveVisualizerMode,
+                        onToggleParticles = onToggleParticles,
+                        onToggleVisualizerMode = onToggleVisualizerMode,
+                        onOpenFullHud = onOpenFullHud
                     )
                 }
             }
@@ -1041,6 +1092,7 @@ private fun MissionStepperCard(
 @Composable
 private fun QuickHinglishChipsRow(onPickPrompt: (String) -> Unit) {
     val suggestions = listOf(
+        "Full HUD on karo",
         "Permanent listening on karo",
         "System HUD aur net speed batao",
         "Floating HUD on karo",

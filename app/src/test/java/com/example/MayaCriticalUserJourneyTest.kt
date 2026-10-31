@@ -914,5 +914,79 @@ class MayaCriticalUserJourneyTest {
         assertTrue(vm.silentListeningEnabled.value)
         assertTrue(vm.voiceReplyEnabled.value)
     }
+
+    @Test
+    fun cuj13_mayaUiFullFeaturePort_leftRightPanels_waveMic_particleEngine_signature_andFullHudOverlay() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Verify SystemHudMonitor GPU, Disk, and Process Thread telemetry (`system_worker.py` + `right_panel.py`)
+        val monitor = SystemHudMonitor(context)
+        val snap = monitor.readSnapshot()
+        assertTrue(snap.gpuLoadPercent in 1..100)
+        assertTrue(snap.storageUsedPercent in 1..100)
+        assertTrue(snap.appThreadCount >= 1)
+        assertTrue(snap.toHinglishSpokenSummary("Boss").contains("GPU"))
+        assertTrue(snap.toHinglishSpokenSummary("Boss").contains("Disk"))
+        assertTrue(snap.toBoardDiagnosticMarkdown().contains("GPU Utilization"))
+        assertTrue(snap.toBoardDiagnosticMarkdown().contains("active app threads"))
+
+        // 2. Verify decoupled MicWorker noise gate & 0.5 smoothing (`workers/mic_worker.py`)
+        val voice = MayaVoiceEngine(context)
+        voice.onMicRmsUpdated(-3.0f) // Below 0.02f noise gate -> stays 0f
+        assertEquals(0f, voice.micLevel.value, 0.001f)
+        voice.onMicRmsUpdated(7.0f) // Above noise gate -> smoothed > 0f
+        assertTrue(voice.micLevel.value > 0.2f)
+        voice.stopListening()
+        assertEquals(0f, voice.micLevel.value, 0.001f)
+        voice.shutdown()
+
+        // 3. Verify Cockpit HUD upgraded gauges, Wave Mic Visualizer, Particle Engine, and Full Maya AI HUD mode
+        val vm = buildTestViewModel("cuj13_boss")
+        composeTestRule.setContent {
+            MayaRootApp(viewModel = vm)
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("cockpit_particle_engine").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maya_wave_mic_visualizer").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("hud_gauge_gpu").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("hud_gauge_disk").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("header_open_full_hud_button").assertIsDisplayed()
+
+        // 4. Launch Full Maya AI HUD via Hinglish voice/text command ("Full HUD on karo")
+        assertFalse(vm.hudConfig.value.fullHudVisible)
+        vm.sendCommand("Full HUD on karo")
+        composeTestRule.waitForIdle()
+        assertTrue(vm.hudConfig.value.fullHudVisible)
+
+        // Verify Full Maya AI HUD Overlay, ParticleEngine, Orb, Wave Mic, LeftPanel, RightPanel, and SignatureWidget
+        composeTestRule.onNodeWithTag("maya_full_hud_overlay").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maya_particle_engine_full").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("full_hud_reactive_orb").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("full_hud_wave_mic_visualizer").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maya_signature_widget").assertIsDisplayed()
+
+        // Scroll & verify LeftPanel (SYSTEM METRICS: CPU, RAM, TEMP, GPU, DISK) and RightPanel (AI STATUS, Clock, Date, Status, Core, Threads)
+        composeTestRule.onNodeWithTag("maya_left_system_panel").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("left_metric_cpu").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("left_metric_gpu").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("left_metric_disk").performScrollTo().assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("maya_right_status_panel").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("right_panel_clock").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("right_panel_status").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("right_panel_ai_core").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("right_panel_threads").performScrollTo().assertIsDisplayed()
+
+        // 5. Toggle AI Particles inside Full HUD and close Full HUD cleanly (Android counterpart to ESC)
+        composeTestRule.onNodeWithTag("full_hud_particles_toggle").performClick()
+        composeTestRule.waitForIdle()
+        assertFalse(vm.hudConfig.value.particlesEnabled)
+
+        composeTestRule.onNodeWithTag("close_full_maya_hud_button").performClick()
+        composeTestRule.waitForIdle()
+        assertFalse(vm.hudConfig.value.fullHudVisible)
+    }
 }
+
 

@@ -5,6 +5,7 @@ import android.view.Choreographer
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -33,8 +34,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DashboardCustomize
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.PushPin
@@ -74,8 +78,11 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.domain.HudEffectTheme
 import com.example.domain.HudHealthLevel
@@ -156,6 +163,7 @@ fun hudTempColor(tempCelsius: Double): Color = when {
 fun QuantumHudContainer(
     effectTheme: HudEffectTheme,
     modifier: Modifier = Modifier,
+    particlesEnabled: Boolean = false,
     content: @Composable BoxScope.() -> Unit
 ) {
     val accent = LocalPersonaAccent.current
@@ -213,6 +221,16 @@ fun QuantumHudContainer(
                 HudEffectTheme.MINIMAL -> Unit
             }
             drawHudCornerAccents(color = accent.primary.copy(alpha = 0.85f))
+        }
+
+        if (particlesEnabled && effectTheme != HudEffectTheme.MINIMAL) {
+            MayaParticleEngineOverlay(
+                particleCount = 30,
+                maxConnections = 24,
+                showScanlines = effectTheme == HudEffectTheme.HOLOGRAPHIC_SCAN,
+                testTagName = "cockpit_particle_engine",
+                modifier = Modifier.matchParentSize()
+            )
         }
 
         content()
@@ -306,7 +324,10 @@ private fun DrawScope.drawHudCornerAccents(color: Color) {
 }
 
 /**
- * Centerpiece Reactive AI Orb from `HunterisLive-1/maya-ui`.
+ * Centerpiece Reactive AI Orb upgraded with `ui/orb_widget.py` from `HunterisLive-1/maya-ui`:
+ * - Smooth spring-like radius expansion (`amplitude` lerp)
+ * - HSV Hue shift from Blue (`240°`) at idle to Cyan (`180°`) at peak voice output
+ * - 3 concentric glowing HSV aura layers behind bold monospace `"MAYA"` core text.
  */
 @Composable
 fun MayaReactiveOrb(
@@ -316,10 +337,17 @@ fun MayaReactiveOrb(
     isSpeaking: Boolean,
     guardArmed: Boolean,
     onTapOrb: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    centerLabel: String = "MAYA",
+    testTagName: String = "maya_reactive_orb"
 ) {
     val accent = LocalPersonaAccent.current
     val orbCd = stringResource(R.string.cd_hud_orb)
+    val smoothedAmp by animateFloatAsState(
+        targetValue = (audioLevel.coerceIn(0f, 1f) * 2f).coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 110, easing = LinearEasing),
+        label = "orb_smooth_amp"
+    )
     val infinite = rememberInfiniteTransition(label = "maya_orb")
     val spinDeg by infinite.animateFloat(
         initialValue = 0f,
@@ -346,12 +374,20 @@ fun MayaReactiveOrb(
         label = "orb_breathe"
     )
 
+    // `orb_widget.py` HSV Blue (240°) -> Cyan (180°) shift driven by amplitude
+    val hsvHue = (240f - 60f * smoothedAmp).coerceIn(180f, 240f)
+    val hsvShiftColor = Color.hsv(
+        hue = hsvHue,
+        saturation = (0.78f + 0.22f * smoothedAmp).coerceIn(0f, 1f),
+        value = 1f
+    )
+
     val corePrimary = when {
         guardArmed && !isListening && !isSpeaking -> EmeraldSuccess
-        isListening -> accent.primary
-        isSpeaking -> accent.secondary
         isThinking -> AmberWarning
-        else -> accent.primary
+        isSpeaking || smoothedAmp > 0.08f -> hsvShiftColor
+        isListening -> accent.primary
+        else -> hsvShiftColor
     }
 
     Box(
@@ -365,33 +401,37 @@ fun MayaReactiveOrb(
                 role = Role.Button
             }
             .clickable(onClick = onTapOrb)
-            .testTag("maya_reactive_orb")
+            .testTag(testTagName)
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2f, size.height / 2f)
             val maxR = size.minDimension / 2f
-            val energyBoost = 1f + (audioLevel.coerceIn(0f, 1f) * 0.28f)
+            val energyBoost = 1f + (smoothedAmp * 0.34f)
 
-            // Outer aura halo
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        corePrimary.copy(alpha = 0.42f),
-                        accent.secondary.copy(alpha = 0.14f),
-                        Color.Transparent
+            // 3 concentric HSV glow halos (`for glow_size in [8, 5, 3]` in `orb_widget.py`)
+            for (layer in 3 downTo 1) {
+                val layerScale = (0.55f + layer * 0.14f) * (breathe * energyBoost).coerceAtMost(1.22f)
+                val alpha = ((0.12f + 0.14f * smoothedAmp) / layer).coerceIn(0.04f, 0.36f)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            corePrimary.copy(alpha = alpha * 2.2f),
+                            accent.secondary.copy(alpha = alpha),
+                            Color.Transparent
+                        ),
+                        center = center,
+                        radius = (maxR * layerScale).coerceAtLeast(4f)
                     ),
-                    center = center,
-                    radius = maxR * (breathe * energyBoost).coerceAtMost(1.25f)
-                ),
-                radius = maxR,
-                center = center
-            )
+                    radius = (maxR * layerScale).coerceAtMost(maxR),
+                    center = center
+                )
+            }
 
             // Outer dashed telemetry ring
             rotate(degrees = spinDeg, pivot = center) {
                 drawCircle(
-                    color = corePrimary.copy(alpha = 0.65f),
-                    radius = maxR * 0.84f,
+                    color = corePrimary.copy(alpha = 0.68f),
+                    radius = maxR * 0.86f,
                     center = center,
                     style = Stroke(
                         width = 2.dp.toPx(),
@@ -415,26 +455,38 @@ fun MayaReactiveOrb(
                     startAngle = 15f,
                     sweepAngle = 250f,
                     useCenter = false,
-                    topLeft = Offset(center.x - maxR * 0.68f, center.y - maxR * 0.68f),
-                    size = Size(maxR * 1.36f, maxR * 1.36f),
+                    topLeft = Offset(center.x - maxR * 0.70f, center.y - maxR * 0.70f),
+                    size = Size(maxR * 1.40f, maxR * 1.40f),
                     style = Stroke(width = 2.6.dp.toPx(), cap = StrokeCap.Round)
                 )
             }
 
-            // Inner reactive plasma core
-            val coreRadius = (maxR * 0.42f * breathe * energyBoost).coerceAtMost(maxR * 0.56f)
+            // Inner reactive plasma core (`current_radius += (target - current_radius) * 0.4`)
+            val coreRadius = (maxR * 0.44f * breathe * energyBoost).coerceAtMost(maxR * 0.62f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.90f),
-                        corePrimary,
-                        accent.secondary.copy(alpha = 0.75f)
+                        Color(15, 25, 55, 215),
+                        corePrimary.copy(alpha = 0.88f),
+                        accent.secondary.copy(alpha = 0.65f)
                     ),
-                    center = Offset(center.x - coreRadius * 0.2f, center.y - coreRadius * 0.2f),
-                    radius = coreRadius * 1.2f
+                    center = center,
+                    radius = coreRadius * 1.15f
                 ),
                 radius = coreRadius,
                 center = center
+            )
+        }
+
+        // Centered glowing monospace AI Name (`"MAYA"` in `orb_widget.py`)
+        if (centerLabel.isNotBlank()) {
+            Text(
+                text = centerLabel.take(6),
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = (11f + 3f * smoothedAmp).sp,
+                color = Color.White,
+                maxLines = 1
             )
         }
     }
@@ -525,7 +577,7 @@ fun NeonAudioSpectrumVisualizer(
 }
 
 /**
- * Full System Monitoring HUD Panel from `HunterisLive-1/maya-ui` (`CPU`, `RAM`, `TEMP`, `NET ↓/↑`, `FPS/ROM`).
+ * Full System Monitoring HUD Panel from `HunterisLive-1/maya-ui` (`CPU`, `RAM`, `GPU`, `DISK`, `TEMP`, `NET ↓/↑`, `THREADS`).
  */
 @Composable
 fun SystemMonitoringHudPanel(
@@ -535,7 +587,12 @@ fun SystemMonitoringHudPanel(
     onSelectTheme: (HudEffectTheme) -> Unit,
     onToggleFloatingHud: () -> Unit,
     onPinDiagnosticToBoard: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    particlesEnabled: Boolean = true,
+    waveVisualizerMode: Boolean = true,
+    onToggleParticles: () -> Unit = {},
+    onToggleVisualizerMode: () -> Unit = {},
+    onOpenFullHud: () -> Unit = {}
 ) {
     val accent = LocalPersonaAccent.current
     val healthColor = when (snapshot.healthLevel) {
@@ -558,6 +615,7 @@ fun SystemMonitoringHudPanel(
             Text(
                 text = stringResource(R.string.hud_title_quantum),
                 style = MaterialTheme.typography.labelMedium,
+                fontFamily = FontFamily.Monospace,
                 color = accent.primary
             )
             Surface(
@@ -565,8 +623,9 @@ fun SystemMonitoringHudPanel(
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    text = "${snapshot.healthLevel.label} • ${snapshot.uiFps} FPS",
+                    text = "${snapshot.healthLevel.label} • ${snapshot.uiFps} FPS • ${snapshot.appThreadCount} THR",
                     style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
                     color = healthColor,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                 )
@@ -594,14 +653,39 @@ fun SystemMonitoringHudPanel(
             )
         }
 
-        // Row 2: Thermal (°C) & Live Network Throughput (↓ / ↑)
+        // Row 2: GPU & DISK (`workers/system_worker.py` + `ui/left_panel.py`)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            HudMetricGauge(
+                label = "GPU",
+                valueText = "${snapshot.gpuLoadPercent}% • HWUI",
+                progress = snapshot.gpuLoadPercent / 100f,
+                barColor = hudStatusColor(snapshot.gpuLoadPercent),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("hud_gauge_gpu")
+            )
+            HudMetricGauge(
+                label = "DISK",
+                valueText = String.format(Locale.US, "%d%% • %.0fG free", snapshot.storageUsedPercent, snapshot.storageFreeGb),
+                progress = snapshot.storageUsedPercent / 100f,
+                barColor = hudStatusColor(snapshot.storageUsedPercent),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("hud_gauge_disk")
+            )
+        }
+
+        // Row 3: Thermal (°C) & Live Network Throughput (↓ / ↑)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             val tempNorm = ((snapshot.temperatureCelsius - 20.0) / 30.0).toFloat().coerceIn(0.08f, 1f)
             HudMetricGauge(
-                label = "THERMAL",
+                label = "TEMP",
                 valueText = String.format(Locale.US, "%.1f°C • %s", snapshot.temperatureCelsius, snapshot.thermalStatusLabel),
                 progress = tempNorm,
                 barColor = hudTempColor(snapshot.temperatureCelsius),
@@ -618,7 +702,7 @@ fun SystemMonitoringHudPanel(
             )
         }
 
-        // Row 3: HUD Effect Theme Switcher + Floating HUD + Pin Snapshot to Board
+        // Row 4: Full Maya HUD + Wave/Bars Visualizer + AI Particles + Theme Switcher + Float HUD + Pin Report
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -626,6 +710,59 @@ fun SystemMonitoringHudPanel(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            AssistChip(
+                onClick = onOpenFullHud,
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Fullscreen,
+                        contentDescription = stringResource(R.string.cd_open_full_maya_hud),
+                        modifier = Modifier.size(16.dp)
+                    )
+                },
+                label = { Text(stringResource(R.string.hud_full_mode_chip), style = MaterialTheme.typography.labelSmall) },
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("open_full_maya_hud_button")
+            )
+
+            FilterChip(
+                selected = waveVisualizerMode,
+                onClick = onToggleVisualizerMode,
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.GraphicEq,
+                        contentDescription = stringResource(R.string.cd_toggle_visualizer_mode),
+                        modifier = Modifier.size(16.dp)
+                    )
+                },
+                label = {
+                    Text(
+                        if (waveVisualizerMode) stringResource(R.string.hud_wave_mode_label)
+                        else stringResource(R.string.hud_bars_mode_label),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                },
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("toggle_visualizer_mode_button")
+            )
+
+            FilterChip(
+                selected = particlesEnabled,
+                onClick = onToggleParticles,
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.AutoAwesome,
+                        contentDescription = stringResource(R.string.cd_toggle_particles),
+                        modifier = Modifier.size(16.dp)
+                    )
+                },
+                label = { Text(stringResource(R.string.hud_particles_label), style = MaterialTheme.typography.labelSmall) },
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("toggle_particles_button")
+            )
+
             HudEffectTheme.entries.forEach { mode ->
                 FilterChip(
                     selected = effectTheme == mode,

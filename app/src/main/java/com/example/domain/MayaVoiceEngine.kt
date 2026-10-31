@@ -136,6 +136,20 @@ class MayaVoiceEngine(
     private val _audioLevel = MutableStateFlow(0f)
     val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
 
+    /**
+     * Decoupled Microphone input level mirroring `workers/mic_worker.py` in `maya-ui`:
+     * high-sensitivity gain, noise gate (< 0.02f -> 0f), clamp 0..1, and 0.5f smoothing.
+     */
+    private val _micLevel = MutableStateFlow(0f)
+    val micLevel: StateFlow<Float> = _micLevel.asStateFlow()
+
+    /**
+     * Decoupled Speaker / TTS output amplitude mirroring `workers/audio_worker.py` in `maya-ui`,
+     * specifically driving the AI Orb's HSV Blue->Cyan shift and radius expansion.
+     */
+    private val _speakerAmplitude = MutableStateFlow(0f)
+    val speakerAmplitude: StateFlow<Float> = _speakerAmplitude.asStateFlow()
+
     private val _spectrumBands = MutableStateFlow(List(SPECTRUM_BAND_COUNT) { 0.08f })
     val spectrumBands: StateFlow<List<Float>> = _spectrumBands.asStateFlow()
 
@@ -407,11 +421,13 @@ class MayaVoiceEngine(
         ttsWaveJob = audioScope.launch {
             var step = 0
             while (isActive && _isSpeaking.value) {
-                val syllablePulse = 0.35f + 0.45f * abs(sin(step * 0.42)).toFloat()
+                val syllablePulse = (0.35f + 0.50f * abs(sin(step * 0.42)).toFloat()).coerceIn(0f, 1f)
+                _speakerAmplitude.value = syllablePulse
                 updateSpectrumFromNormalizedEnergy(syllablePulse)
                 step++
                 delay(55L)
             }
+            _speakerAmplitude.value = 0f
             resetSpectrumIdle()
         }
     }
@@ -419,12 +435,17 @@ class MayaVoiceEngine(
     private fun stopTtsOutputSpectrum() {
         ttsWaveJob?.cancel()
         ttsWaveJob = null
+        _speakerAmplitude.value = 0f
         if (!_isListening.value) {
             resetSpectrumIdle()
         }
     }
 
     internal fun onMicRmsUpdated(rmsdB: Float) {
+        val rawAmp = ((rmsdB + 2f) / 10f).coerceIn(0f, 1f)
+        // Exact noise gate (< 0.02f -> 0f) + 0.5 smoothing from maya-ui workers/mic_worker.py
+        val gated = if (rawAmp < 0.02f) 0f else rawAmp
+        _micLevel.value = (_micLevel.value + (gated - _micLevel.value) * 0.5f).coerceIn(0f, 1f)
         val normalized = ((rmsdB + 2f) / 12f).coerceIn(0.05f, 1f)
         updateSpectrumFromNormalizedEnergy(normalized)
     }
@@ -444,6 +465,10 @@ class MayaVoiceEngine(
 
     private fun resetSpectrumIdle() {
         _audioLevel.value = 0f
+        _micLevel.value = 0f
+        if (!_isSpeaking.value) {
+            _speakerAmplitude.value = 0f
+        }
         _spectrumBands.value = List(SPECTRUM_BAND_COUNT) { 0.08f }
     }
 
